@@ -24,6 +24,8 @@ static void print_usage(const char *prog_name)
 		"  -smp <cpus>      set number of virtual cpus (default: 1)\n");
 	fprintf(stderr,
 		"  -kernel <file>   load a flat binary firmware or kernel image\n");
+	fprintf(stderr,
+		"  -accel <name>    select hypervisor backend (default: kvm)\n");
 	fprintf(stderr, "  -h               show this help message\n");
 }
 
@@ -31,6 +33,7 @@ int main(int argc, char **argv)
 {
 	struct vm_machine vm;
 	struct vm_machine_config cfg = {
+		.accel_name = "kvm",
 		.ram_base = 0x0000,
 		.ram_size = 16 * 1024 * 1024,
 		.nr_vcpus = 1,
@@ -57,6 +60,8 @@ int main(int argc, char **argv)
 			cfg.nr_vcpus = (unsigned int)atoi(argv[++i]);
 		} else if (strcmp(argv[i], "-kernel") == 0 && i + 1 < argc) {
 			cfg.firmware_path = argv[++i];
+		} else if (strcmp(argv[i], "-accel") == 0 && i + 1 < argc) {
+			cfg.accel_name = argv[++i];
 		} else {
 			pr_err("unknown option: %s\n", argv[i]);
 			print_usage(argv[0]);

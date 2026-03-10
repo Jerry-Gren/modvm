@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#include <modvm/core/event_loop.h>
+#include <modvm/os/event_loop.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 

@@ -8,7 +8,7 @@
 #include <termios.h>
 
 #include <modvm/core/chardev.h>
-#include <modvm/core/event_loop.h>
+#include <modvm/os/event_loop.h>
 #include <modvm/utils/log.h>
 
 #undef pr_fmt

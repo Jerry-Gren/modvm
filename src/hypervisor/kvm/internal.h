@@ -33,4 +33,6 @@ int kvm_arch_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc);
 
 int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run);
 
+extern const struct vm_vcpu_ops kvm_vcpu_ops;
+
 #endif /* MODVM_KVM_INTERNAL_H */

@@ -118,6 +118,7 @@ static void test_machine_lifecycle(void)
 		vm_panic("failed to create console backend\n");
 
 	struct vm_machine_config cfg = {
+		.accel_name = "kvm",
 		.ram_base = 0x0000,
 		.ram_size = 4096,
 		.nr_vcpus = 1,

@@ -37,6 +37,7 @@ struct vm_machine_class {
 
 /**
  * struct vm_machine_config - user supplied hardware parameters.
+ * @accel_name: string identifier of the requested hypervisor backend.
  * @ram_base: guest physical address where primary memory starts.
  * @ram_size: total guest physical memory in bytes.
  * @nr_vcpus: number of virtual processors to instantiate.
@@ -45,6 +46,7 @@ struct vm_machine_class {
  * @console: host character device mapped to the primary console.
  */
 struct vm_machine_config {
+	const char *accel_name;
 	uint64_t ram_base;
 	size_t ram_size;
 	unsigned int nr_vcpus;

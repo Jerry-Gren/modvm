@@ -13,12 +13,12 @@
 #define pr_fmt(fmt) "memory: " fmt
 
 /**
- * vm_mem_space_init - Initialize a fresh physical memory controller.
- * @space: The memory space context to initialize.
- * @map_cb: Function to invoke when a new memory region needs hardware mapping.
- * @data: Private context data passed to the map_cb.
+ * vm_mem_space_init - initialize a fresh physical memory controller.
+ * @space: the memory space context to initialize.
+ * @map_cb: function to invoke when a new memory region needs hardware mapping.
+ * @data: private context data passed to the map_cb.
  *
- * Return: 0 on success, or a negative error code on invalid arguments.
+ * return: 0 on success, or a negative error code on invalid arguments.
  */
 int vm_mem_space_init(struct vm_mem_space *space, vm_mem_map_cb_t map_cb,
 		      void *data)
@@ -46,17 +46,17 @@ static bool is_overlap(uint64_t base1, size_t size1, uint64_t base2,
 }
 
 /**
- * vm_mem_region_add - Register a contiguous physical memory bank.
- * @space: The memory space to attach this region to.
- * @gpa: The starting address as seen by the virtual processor.
- * @size: Total capacity of the memory bank in bytes.
- * @flags: Bitmask governing read/write/execute permissions.
+ * vm_mem_region_add - register a contiguous physical memory bank.
+ * @space: the memory space to attach this region to.
+ * @gpa: the starting address as seen by the virtual processor.
+ * @size: total capacity of the memory bank in bytes.
+ * @flags: bitmask governing read/write/execute permissions.
  *
  * Allocates host backing memory and registers the mapping with the
  * architecture-specific hypervisor backend. Ensures no address overlap
  * occurs within the existing topology.
  *
- * Return: 0 on success, negative error code on overlap or failure.
+ * return: 0 on success, negative error code on overlap or failure.
  */
 int vm_mem_region_add(struct vm_mem_space *space, uint64_t gpa, size_t size,
 		      uint32_t flags)
@@ -129,13 +129,13 @@ int vm_mem_region_add(struct vm_mem_space *space, uint64_t gpa, size_t size,
 }
 
 /**
- * vm_mem_gpa_to_hva - Resolve a guest physical address.
- * @space: The memory space containing the topology.
- * @gpa: The absolute physical address requested by the guest.
+ * vm_mem_gpa_to_hva - resolve a guest physical address.
+ * @space: the memory space containing the topology.
+ * @gpa: the absolute physical address requested by the guest.
  *
  * Performs a software page-walk of the registered memory regions.
  *
- * Return: The corresponding host virtual address pointer, or NULL if
+ * return: the corresponding host virtual address pointer, or NULL if
  * unmapped.
  */
 void *vm_mem_gpa_to_hva(struct vm_mem_space *space, uint64_t gpa)
@@ -154,8 +154,8 @@ void *vm_mem_gpa_to_hva(struct vm_mem_space *space, uint64_t gpa)
 }
 
 /**
- * vm_mem_space_destroy - Tear down the memory controller and free RAM.
- * @space: The memory space to destroy.
+ * vm_mem_space_destroy - tear down the memory controller and free RAM.
+ * @space: the memory space to destroy.
  */
 void vm_mem_space_destroy(struct vm_mem_space *space)
 {

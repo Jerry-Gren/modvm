@@ -19,36 +19,31 @@
 #define pr_fmt(fmt) "kvm_vcpu: " fmt
 
 /**
- * vm_vcpu_create - request a hardware virtual processor from KVM.
+ * kvm_vcpu_init - request a hardware virtual processor from KVM.
  * @vcpu: the core vcpu structure to populate.
  * @hv: the parent hypervisor container.
  * @id: sequential index or APIC ID/MPIDR.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_vcpu_create(struct vm_vcpu *vcpu, struct vm_hypervisor *hv, int id)
+static int kvm_vcpu_init(struct vm_vcpu *vcpu)
 {
 	struct kvm_vcpu_state *vcpu_state;
-	struct kvm_state *state;
+	struct kvm_state *state = vcpu->hv->priv;
 	int ret;
-
-	if (!vcpu || !hv || !hv->priv)
-		return -EINVAL;
-
-	state = hv->priv;
 
 	vcpu_state = calloc(1, sizeof(*vcpu_state));
 	if (!vcpu_state)
 		return -ENOMEM;
 
-	vcpu_state->vcpu_fd = ioctl(state->vm_fd, KVM_CREATE_VCPU, id);
+	vcpu_state->vcpu_fd = ioctl(state->vm_fd, KVM_CREATE_VCPU, vcpu->id);
 	if (vcpu_state->vcpu_fd < 0) {
-		pr_err("failed to instantiate hardware vcpu %d\n", id);
+		pr_err("failed to instantiate hardware vcpu %d\n", vcpu->id);
 		ret = -errno;
 		goto err_free_state;
 	}
 
-	if (id > 0) {
+	if (vcpu->id > 0) {
 		struct kvm_mp_state mp_state = {
 			.mp_state = KVM_MP_STATE_UNINITIALIZED
 		};
@@ -56,7 +51,7 @@ int vm_vcpu_create(struct vm_vcpu *vcpu, struct vm_hypervisor *hv, int id)
 		if (ioctl(vcpu_state->vcpu_fd, KVM_SET_MP_STATE, &mp_state) <
 		    0) {
 			pr_err("failed to set architectural power state for ap %d\n",
-			       id);
+			       vcpu->id);
 			ret = -errno;
 			goto err_close_fd;
 		}
@@ -78,11 +73,8 @@ int vm_vcpu_create(struct vm_vcpu *vcpu, struct vm_hypervisor *hv, int id)
 		goto err_close_fd;
 	}
 
-	vcpu->id = id;
-	vcpu->hv = hv;
 	vcpu->priv = vcpu_state;
-
-	pr_info("vcpu %d mapped and initialized\n", id);
+	pr_info("vcpu %d mapped and initialized\n", vcpu->id);
 	return 0;
 
 err_close_fd:
@@ -93,17 +85,14 @@ err_free_state:
 }
 
 /**
- * vm_vcpu_set_pc - configure the CPU reset vector.
+ * kvm_vcpu_set_pc_wrap - configure the CPU reset vector.
  * @vcpu: the virtual processor.
  * @pc: the physical address to begin execution.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
+static int kvm_vcpu_set_pc_wrap(struct vm_vcpu *vcpu, uint64_t pc)
 {
-	if (!vcpu || !vcpu->priv)
-		return -EINVAL;
-
 	return kvm_arch_vcpu_set_pc(vcpu, pc);
 }
 
@@ -158,7 +147,7 @@ static int setup_kvm_sigmask(struct kvm_vcpu_state *state)
 }
 
 /**
- * vm_vcpu_run - the execution loop of the processor.
+ * kvm_vcpu_run - the execution loop of the processor.
  * @vcpu: the virtual processor to run.
  *
  * Traps into hardware virtualization. Yields control back to host
@@ -166,17 +155,11 @@ static int setup_kvm_sigmask(struct kvm_vcpu_state *state)
  *
  * return: 0 on graceful exit, or a negative error code.
  */
-int vm_vcpu_run(struct vm_vcpu *vcpu)
+static int kvm_vcpu_run(struct vm_vcpu *vcpu)
 {
-	struct kvm_vcpu_state *state;
-	struct kvm_run *run;
+	struct kvm_vcpu_state *state = vcpu->priv;
+	struct kvm_run *run = state->run;
 	int ret;
-
-	if (!vcpu || !vcpu->priv)
-		return -EINVAL;
-
-	state = vcpu->priv;
-	run = state->run;
 
 	pr_info("vcpu %d entering hypervisor loop\n", vcpu->id);
 
@@ -230,21 +213,22 @@ int vm_vcpu_run(struct vm_vcpu *vcpu)
 }
 
 /**
- * vm_vcpu_destroy - safely tear down virtual processor resources.
+ * kvm_vcpu_destroy - safely tear down virtual processor resources.
  * @vcpu: the virtual processor to destroy.
  */
-void vm_vcpu_destroy(struct vm_vcpu *vcpu)
+static void kvm_vcpu_destroy(struct vm_vcpu *vcpu)
 {
-	struct kvm_vcpu_state *state;
-
-	if (!vcpu || !vcpu->priv)
-		return;
-
-	state = vcpu->priv;
+	struct kvm_vcpu_state *state = vcpu->priv;
 
 	munmap(state->run, state->run_size);
 	close(state->vcpu_fd);
 
 	free(state);
-	vcpu->priv = NULL;
 }
+
+const struct vm_vcpu_ops kvm_vcpu_ops = {
+	.init = kvm_vcpu_init,
+	.destroy = kvm_vcpu_destroy,
+	.set_pc = kvm_vcpu_set_pc_wrap,
+	.run = kvm_vcpu_run,
+};

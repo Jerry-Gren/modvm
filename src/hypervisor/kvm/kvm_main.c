@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 
 #include <modvm/core/hypervisor.h>
+#include <modvm/core/vcpu.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
@@ -55,20 +56,17 @@ static int kvm_mem_map_cb(struct vm_mem_space *space, struct vm_mem_region *reg,
 }
 
 /**
- * vm_hypervisor_create - initialize the KVM acceleration backend.
- * @hv: the core hypervisor context to populate.
+ * kvm_hv_init - initialize the KVM acceleration backend.
+ * @hv: the hypervisor context to populate.
  *
  * Opens /dev/kvm, validates API version, and creates the VM descriptor.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_hypervisor_create(struct vm_hypervisor *hv)
+static int kvm_hv_init(struct vm_hypervisor *hv)
 {
 	struct kvm_state *state;
 	int ret;
-
-	if (WARN_ON(!hv))
-		return -EINVAL;
 
 	state = calloc(1, sizeof(*state));
 	if (!state)
@@ -127,20 +125,15 @@ err_free_state:
 }
 
 /**
- * vm_hypervisor_setup_irqchip - synthesize architectural interrupt chips.
+ * kvm_hv_setup_irqchip - synthesize architectural interrupt chips.
  * @hv: the initialized hypervisor context.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_hypervisor_setup_irqchip(struct vm_hypervisor *hv)
+static int kvm_hv_setup_irqchip(struct vm_hypervisor *hv)
 {
 	struct kvm_pit_config pit_conf = { .flags = 0 };
-	struct kvm_state *state;
-
-	if (WARN_ON(!hv || !hv->priv))
-		return -EINVAL;
-
-	state = hv->priv;
+	struct kvm_state *state = hv->priv;
 
 	if (ioctl(state->vm_fd, KVM_CREATE_IRQCHIP, 0) < 0) {
 		pr_err("failed to synthesize architectural irqchip: %d\n",
@@ -159,28 +152,23 @@ int vm_hypervisor_setup_irqchip(struct vm_hypervisor *hv)
 }
 
 /**
- * vm_hypervisor_set_irq - inject a hardware interrupt signal.
+ * kvm_hv_set_irq - inject a hardware interrupt signal.
  * @hv: the hypervisor context.
  * @irq: the Global System Interrupt (GSI) number.
  * @level: logical voltage level (1 for high, 0 for low).
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_hypervisor_set_irq(struct vm_hypervisor *hv, uint32_t irq, int level)
+static int kvm_hv_set_irq(struct vm_hypervisor *hv, uint32_t gsi, int level)
 {
 	struct kvm_irq_level irq_level;
-	struct kvm_state *state;
+	struct kvm_state *state = hv->priv;
 
-	if (WARN_ON(!hv || !hv->priv))
-		return -EINVAL;
-
-	state = hv->priv;
-
-	irq_level.irq = irq;
+	irq_level.irq = gsi;
 	irq_level.level = level;
 
 	if (ioctl(state->vm_fd, KVM_IRQ_LINE, &irq_level) < 0) {
-		pr_err("failed to assert hardware irq line %u\n", irq);
+		pr_err("failed to assert hardware irq line %u\n", gsi);
 		return -errno;
 	}
 
@@ -188,17 +176,12 @@ int vm_hypervisor_set_irq(struct vm_hypervisor *hv, uint32_t irq, int level)
 }
 
 /**
- * vm_hypervisor_destroy - release all host resources tied to KVM.
+ * kvm_hv_destroy - release all host resources tied to KVM.
  * @hv: the hypervisor context to tear down.
  */
-void vm_hypervisor_destroy(struct vm_hypervisor *hv)
+static void kvm_hv_destroy(struct vm_hypervisor *hv)
 {
-	struct kvm_state *state;
-
-	if (!hv || !hv->priv)
-		return;
-
-	state = hv->priv;
+	struct kvm_state *state = hv->priv;
 
 	if (hv->init_mutex) {
 		os_mutex_destroy(hv->init_mutex);
@@ -210,4 +193,22 @@ void vm_hypervisor_destroy(struct vm_hypervisor *hv)
 	close(state->kvm_fd);
 	free(state);
 	hv->priv = NULL;
+}
+
+static const struct vm_hv_ops kvm_ops = {
+	.init = kvm_hv_init,
+	.destroy = kvm_hv_destroy,
+	.setup_irqchip = kvm_hv_setup_irqchip,
+	.set_irq = kvm_hv_set_irq,
+};
+
+static const struct vm_hv_class kvm_class = {
+	.name = "kvm",
+	.ops = &kvm_ops,
+	.vcpu_ops = &kvm_vcpu_ops,
+};
+
+static void __attribute__((constructor)) register_kvm_class(void)
+{
+	vm_hv_class_register(&kvm_class);
 }

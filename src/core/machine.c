@@ -7,7 +7,7 @@
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
 #include <modvm/os/thread.h>
-#include <modvm/core/event_loop.h>
+#include <modvm/os/event_loop.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "machine: " fmt
@@ -46,7 +46,7 @@ int vm_machine_init(struct vm_machine *machine,
 	machine->config = *config;
 
 	/* Bring up the hypervisor container to establish the execution boundary */
-	ret = vm_hypervisor_create(&machine->hv);
+	ret = vm_hypervisor_init(&machine->hv, machine->config.accel_name);
 	if (ret < 0) {
 		pr_err("failed to instantiate hypervisor context\n");
 		return ret;
@@ -87,7 +87,7 @@ int vm_machine_init(struct vm_machine *machine,
 			goto err_free_vcpus;
 		}
 
-		ret = vm_vcpu_create(machine->vcpus[i], &machine->hv, i);
+		ret = vm_vcpu_init(machine->vcpus[i], &machine->hv, i);
 		if (ret < 0) {
 			pr_err("failed to instantiate vcpu %u\n", i);
 			free(machine->vcpus[i]);
