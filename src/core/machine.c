@@ -2,233 +2,256 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#include <modvm/machine.h>
-#include <modvm/log.h>
-#include <modvm/err.h>
-#include <modvm/bug.h>
-#include <modvm/os_thread.h>
-#include <modvm/event_loop.h>
+#include <modvm/core/machine.h>
+#include <modvm/utils/log.h>
+#include <modvm/utils/err.h>
+#include <modvm/utils/bug.h>
+#include <modvm/os/thread.h>
+#include <modvm/core/event_loop.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "machine: " fmt
 
-/**
- * vcpu_thread_entry - the thread entry point for each vCPU
- * @opaque: pointer to the specific vcpu structure
- *
- * This routine acts as the heartbeat for a single processor core, trapping
- * continuously in and out of the hardware virtualization extensions.
- *
- * Return: NULL upon thread exit.
- */
-static void *vcpu_thread_entry(void *opaque)
+static void *virtual_cpu_thread_entry(void *context_data)
 {
-	struct vcpu *vcpu = opaque;
-	int ret;
+	struct vm_virtual_cpu *cpu = context_data;
+	int return_code;
 
-	ret = vcpu_run(vcpu);
-	if (ret < 0)
-		pr_err("Fatal execution error on vCPU %d\n", vcpu->id);
+	return_code = vm_virtual_cpu_run(cpu);
+	if (return_code < 0)
+		pr_err("fatal execution error on virtual processor %d\n",
+		       cpu->cpu_id);
 
 	return NULL;
 }
 
-int machine_init(struct machine *mach, const struct machine_config *cfg)
+/**
+ * vm_machine_init - assemble the virtual machine topology
+ * @machine: the machine object to initialize
+ * @config: the immutable configuration parameters
+ *
+ * Allocates processors, initializes the core hypervisor context,
+ * maps primary RAM, and invokes the board-specific initialization hook.
+ *
+ * return: 0 on success, or a negative error code on failure.
+ */
+int vm_machine_init(struct vm_machine *machine,
+		    const struct vm_machine_config *config)
 {
-	unsigned int i;
-	int ret;
+	unsigned int index;
+	int return_code;
 
-	if (WARN_ON(!mach || !cfg))
+	if (WARN_ON(!machine || !config))
 		return -EINVAL;
 
-	mach->config = *cfg;
+	machine->config = *config;
 
-	/* Bring up the hypervisor container first to establish the VM boundary */
-	ret = vm_create(&mach->vm);
-	if (ret < 0) {
-		pr_err("Failed to create hypervisor container\n");
-		return ret;
+	/* Bring up the hypervisor container to establish the execution boundary */
+	return_code = vm_hypervisor_create(&machine->hypervisor);
+	if (return_code < 0) {
+		pr_err("failed to instantiate hypervisor context\n");
+		return return_code;
 	}
 
-	/* Dynamically allocate the primary RAM bank based on configuration */
-	ret = vm_memory_region_add(&mach->vm.mem_space, mach->config.ram_base,
-				   mach->config.ram_size,
-				   VM_MEM_F_READONLY | VM_MEM_F_EXEC);
-	if (ret < 0) {
-		pr_err("Failed to allocate primary system RAM\n");
-		goto err_destroy_vm;
+	return_code = vm_memory_region_add(&machine->hypervisor.memory_space,
+					   machine->config.memory_base_address,
+					   machine->config.memory_size_bytes,
+					   VM_MEMORY_FLAG_READONLY |
+						   VM_MEMORY_FLAG_EXECUTABLE);
+	if (return_code < 0) {
+		pr_err("failed to map primary system memory\n");
+		goto error_destroy_hypervisor;
 	}
 
-	/*
-	 * Inversion of Control: Defer peripheral initialization to the
-	 * provided callback. This prevents architecture leak into the core.
-	 */
-	if (mach->config.machine_type && mach->config.machine_type->init) {
-		ret = mach->config.machine_type->init(mach);
-		if (ret < 0) {
-			pr_err("Failed to initialize motherboard peripherals\n");
-			goto err_destroy_vm;
+	if (machine->config.machine_class &&
+	    machine->config.machine_class->operations &&
+	    machine->config.machine_class->operations->init) {
+		return_code = machine->config.machine_class->operations->init(
+			machine);
+		if (return_code < 0) {
+			pr_err("machine class failed to initialize peripherals\n");
+			goto error_destroy_hypervisor;
 		}
 	}
 
-	mach->vcpus = calloc(mach->config.smp_cpus, sizeof(struct vcpu *));
-	mach->threads =
-		calloc(mach->config.smp_cpus, sizeof(struct os_thread *));
-	if (!mach->vcpus || !mach->threads) {
-		ret = -ENOMEM;
-		goto err_free_topology;
+	machine->virtual_cpus = calloc(machine->config.processor_count,
+				       sizeof(struct vm_virtual_cpu *));
+	machine->virtual_cpu_threads = calloc(machine->config.processor_count,
+					      sizeof(struct os_thread *));
+	if (!machine->virtual_cpus || !machine->virtual_cpu_threads) {
+		return_code = -ENOMEM;
+		goto error_free_topology;
 	}
 
-	for (i = 0; i < mach->config.smp_cpus; i++) {
-		mach->vcpus[i] = calloc(1, sizeof(struct vcpu));
-		if (!mach->vcpus[i]) {
-			ret = -ENOMEM;
-			goto err_free_vcpus;
+	for (index = 0; index < machine->config.processor_count; index++) {
+		machine->virtual_cpus[index] =
+			calloc(1, sizeof(struct vm_virtual_cpu));
+		if (!machine->virtual_cpus[index]) {
+			return_code = -ENOMEM;
+			goto error_free_virtual_cpus;
 		}
 
-		ret = vcpu_create(mach->vcpus[i], &mach->vm, i);
-		if (ret < 0) {
-			pr_err("Failed to instantiate vCPU %u\n", i);
-			free(mach->vcpus[i]);
-			mach->vcpus[i] = NULL;
-			goto err_free_vcpus;
+		return_code =
+			vm_virtual_cpu_create(machine->virtual_cpus[index],
+					      &machine->hypervisor, index);
+		if (return_code < 0) {
+			pr_err("failed to instantiate virtual processor %u\n",
+			       index);
+			free(machine->virtual_cpus[index]);
+			machine->virtual_cpus[index] = NULL;
+			goto error_free_virtual_cpus;
 		}
 	}
 
-	pr_info("Machine initialized with %zu bytes RAM and %u vCPUs\n",
-		mach->config.ram_size, mach->config.smp_cpus);
+	pr_info("machine assembled with %zu bytes ram and %u processors\n",
+		machine->config.memory_size_bytes,
+		machine->config.processor_count);
 
 	return 0;
 
-err_free_vcpus:
-	while (i > 0) {
-		--i;
-		if (mach->vcpus[i]) {
-			vcpu_destroy(mach->vcpus[i]);
-			free(mach->vcpus[i]);
+error_free_virtual_cpus:
+	while (index > 0) {
+		--index;
+		if (machine->virtual_cpus[index]) {
+			vm_virtual_cpu_destroy(machine->virtual_cpus[index]);
+			free(machine->virtual_cpus[index]);
 		}
 	}
-err_free_topology:
-	free(mach->vcpus);
-	free(mach->threads);
-err_destroy_vm:
-	vm_destroy(&mach->vm);
-	return ret;
+error_free_topology:
+	free(machine->virtual_cpus);
+	free(machine->virtual_cpu_threads);
+error_destroy_hypervisor:
+	vm_hypervisor_destroy(&machine->hypervisor);
+	return return_code;
 }
 
-int machine_run(struct machine *mach)
+/**
+ * vm_machine_run - ignite the processor cores and start the main loop
+ * @machine: the fully initialized machine object
+ *
+ * return: 0 upon graceful shutdown, or a negative error code.
+ */
+int vm_machine_run(struct vm_machine *machine)
 {
-	unsigned int i;
-	int ret;
+	unsigned int index;
+	int return_code;
 
-	if (WARN_ON(!mach))
+	if (WARN_ON(!machine))
 		return -EINVAL;
 
-	pr_info("Powering on the virtual machine...\n");
+	pr_info("powering on the virtual machine...\n");
 
-	/* Initialize the asynchronous event dispatch core */
-	ret = event_loop_init();
-	if (ret < 0)
-		return ret;
+	return_code = vm_event_loop_init();
+	if (return_code < 0)
+		return return_code;
 
 	os_thread_system_init();
 
-	/* Energize the core virtual machine container */
-	atomic_store(&mach->vm.running, true);
+	atomic_store(&machine->hypervisor.is_running, true);
 
-	/*
-	 * Delegate the architecture-specific reset protocol to the machine class.
-	 * This handles loading the boot image into the correct physical memory
-	 * address and configuring the Bootstrap Processor's registers.
-	 */
-	if (mach->config.machine_type && mach->config.machine_type->reset) {
-		ret = mach->config.machine_type->reset(mach);
-		if (ret < 0) {
-			pr_err("Machine reset and boot preparation failed\n");
-			return ret;
+	if (machine->config.machine_class &&
+	    machine->config.machine_class->operations &&
+	    machine->config.machine_class->operations->reset) {
+		return_code = machine->config.machine_class->operations->reset(
+			machine);
+		if (return_code < 0) {
+			pr_err("machine class reset protocol failed\n");
+			return return_code;
 		}
 	}
 
-	for (i = 0; i < mach->config.smp_cpus; i++) {
-		/* Directly pass the vcpu instance, maintaining 1:1 conceptual mapping */
-		mach->threads[i] =
-			os_thread_create(vcpu_thread_entry, mach->vcpus[i]);
-		if (IS_ERR(mach->threads[i])) {
-			pr_err("Failed to spawn thread for vCPU %u\n", i);
-			return PTR_ERR(mach->threads[i]);
+	os_mutex_lock(machine->hypervisor.startup_synchronization_lock);
+
+	for (index = 0; index < machine->config.processor_count; index++) {
+		machine->virtual_cpu_threads[index] = os_thread_create(
+			virtual_cpu_thread_entry, machine->virtual_cpus[index]);
+
+		if (IS_ERR(machine->virtual_cpu_threads[index])) {
+			pr_err("failed to spawn execution thread for virtual processor %u\n",
+			       index);
+			os_mutex_unlock(machine->hypervisor
+						.startup_synchronization_lock);
+			return PTR_ERR(machine->virtual_cpu_threads[index]);
 		}
 	}
 
-	/*
-	 * Hand over the primary control plane thread to the event loop.
-	 * The thread will park here safely, routing I/O to virtual devices,
-	 * until a guest shutdown request breaks the loop.
-	 */
-	event_loop_run();
+	os_mutex_unlock(machine->hypervisor.startup_synchronization_lock);
 
 	/*
-	 * The event loop has terminated. The system is entering a power-off state.
-	 * We safely reap all virtual processor threads before returning.
+	 * The primary host thread transforms into the system event dispatcher.
+	 * It will block indefinitely, routing peripheral I/O, until a shutdown
+	 * request is intercepted.
 	 */
-	for (i = 0; i < mach->config.smp_cpus; i++) {
-		if (mach->threads[i]) {
-			os_thread_join(mach->threads[i]);
+	vm_event_loop_run();
+
+	for (index = 0; index < machine->config.processor_count; index++) {
+		if (machine->virtual_cpu_threads[index]) {
+			os_thread_join(machine->virtual_cpu_threads[index]);
 		}
 	}
 
-	pr_info("Machine powered off gracefully\n");
+	pr_info("machine powered off gracefully\n");
 	return 0;
 }
 
-void machine_request_shutdown(struct machine *mach)
+/**
+ * vm_machine_request_shutdown - broadcast a termination signal to all cores
+ * @machine: the running machine object
+ */
+void vm_machine_request_shutdown(struct vm_machine *machine)
 {
-	unsigned int i;
+	unsigned int index;
 
-	if (!mach)
+	if (!machine)
 		return;
 
-	/* Drop the global power flag */
-	atomic_store(&mach->vm.running, false);
+	atomic_store(&machine->hypervisor.is_running, false);
 
-	/* Broadcast hardware wake-up signal to all processor threads */
-	for (i = 0; i < mach->config.smp_cpus; i++) {
-		if (mach->threads[i])
-			os_thread_kick(mach->threads[i]);
+	for (index = 0; index < machine->config.processor_count; index++) {
+		if (machine->virtual_cpu_threads[index]) {
+			os_thread_send_wakeup_signal(
+				machine->virtual_cpu_threads[index]);
+		}
 	}
 
-	/* Release the primary thread from the blocking dispatch loop */
-	event_loop_stop();
+	vm_event_loop_stop();
 }
 
-void machine_destroy(struct machine *mach)
+/**
+ * vm_machine_destroy - teardown topology and release host resources
+ * @machine: the machine object to destroy
+ */
+void vm_machine_destroy(struct vm_machine *machine)
 {
-	unsigned int i;
+	unsigned int index;
 
-	if (!mach)
+	if (!machine)
 		return;
 
-	/* Safely dismantle the virtual CPU topology */
-	if (mach->vcpus) {
-		for (i = 0; i < mach->config.smp_cpus; i++) {
-			if (mach->vcpus[i]) {
-				vcpu_destroy(mach->vcpus[i]);
-				free(mach->vcpus[i]);
+	if (machine->virtual_cpus) {
+		for (index = 0; index < machine->config.processor_count;
+		     index++) {
+			if (machine->virtual_cpus[index]) {
+				vm_virtual_cpu_destroy(
+					machine->virtual_cpus[index]);
+				free(machine->virtual_cpus[index]);
 			}
 		}
-		free(mach->vcpus);
-		mach->vcpus = NULL;
+		free(machine->virtual_cpus);
+		machine->virtual_cpus = NULL;
 	}
 
-	/* Safely tear down the OS thread tracking structures */
-	if (mach->threads) {
-		for (i = 0; i < mach->config.smp_cpus; i++) {
-			if (mach->threads[i]) {
-				os_thread_destroy(mach->threads[i]);
+	if (machine->virtual_cpu_threads) {
+		for (index = 0; index < machine->config.processor_count;
+		     index++) {
+			if (machine->virtual_cpu_threads[index]) {
+				os_thread_destroy(
+					machine->virtual_cpu_threads[index]);
 			}
 		}
-		free(mach->threads);
-		mach->threads = NULL;
+		free(machine->virtual_cpu_threads);
+		machine->virtual_cpu_threads = NULL;
 	}
 
-	vm_destroy(&mach->vm);
+	vm_hypervisor_destroy(&machine->hypervisor);
 }

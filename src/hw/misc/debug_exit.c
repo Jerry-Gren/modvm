@@ -2,76 +2,68 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#include <modvm/bus.h>
-#include <modvm/machine.h>
-#include <modvm/log.h>
-#include <modvm/err.h>
+#include <modvm/core/bus.h>
+#include <modvm/core/machine.h>
+#include <modvm/utils/log.h>
+#include <modvm/utils/err.h>
 
-#define DEBUG_EXIT_PORT 0x500
+#define DEBUG_EXIT_BASE_PORT 0x500
 
 #undef pr_fmt
 #define pr_fmt(fmt) "debug_exit: " fmt
 
-/**
- * struct debug_exit - hardware state for the graceful shutdown device
- * @dev: base virtual device structure
- * @mach: pointer to the core machine context to trigger global shutdown
- */
-struct debug_exit {
-	struct vm_device dev;
-	struct machine *mach;
+struct debug_exit_state {
+	struct vm_device device;
+	struct vm_machine *machine_context;
 };
 
-/**
- * debug_exit_write - handle CPU outb instructions targeting this device
- *
- * When the guest kernel writes to the debug port, we intercept the
- * payload as an exit code and request the hypervisor to halt execution.
- */
-static void debug_exit_write(struct vm_device *dev, uint64_t offset,
-			     uint64_t value, uint8_t size)
+static void debug_exit_write(struct vm_device *device, uint64_t offset,
+			     uint64_t value, uint8_t access_size)
 {
-	struct debug_exit *de = dev->private_data;
+	struct debug_exit_state *state = device->private_data;
 
-	/*
-	 * Suppress unused parameter warnings for parameters not required
-	 * by this specific hardware implementation.
-	 */
 	(void)offset;
-	(void)size;
+	(void)access_size;
 
-	pr_info("Guest requested ACPI-like shutdown (exit code 0x%lx)\n",
-		value);
-	machine_request_shutdown(de->mach);
+	pr_info("guest requested power off (exit code 0x%lx)\n", value);
+	vm_machine_request_shutdown(state->machine_context);
 }
 
-static const struct vm_device_ops debug_exit_ops = {
+static const struct vm_device_operations debug_exit_operations = {
 	.write = debug_exit_write,
 };
 
-static int debug_exit_create(struct machine *mach, void *platform_data)
+/**
+ * debug_exit_instantiate - create the debug exit hardware object
+ * @machine: the topological container
+ * @platform_data: unused for this specific device
+ *
+ * Registers a single I/O port that allows guest firmware to trigger
+ * a graceful shutdown of the host virtualization engine.
+ */
+static int debug_exit_instantiate(struct vm_machine *machine,
+				  void *platform_data)
 {
-	struct debug_exit *de;
-	int ret;
+	struct debug_exit_state *state;
+	int return_code;
 
 	(void)platform_data;
 
-	de = calloc(1, sizeof(*de));
-	if (!de)
+	state = calloc(1, sizeof(*state));
+	if (!state)
 		return -ENOMEM;
 
-	de->mach = mach;
+	state->machine_context = machine;
 
-	de->dev.name = "DEBUG_EXIT";
-	de->dev.ops = &debug_exit_ops;
-	de->dev.private_data = de;
+	state->device.name = "DEBUG_EXIT";
+	state->device.operations = &debug_exit_operations;
+	state->device.private_data = state;
 
-	/* Register the device specifically to the PIO address space */
-	ret = bus_register_region(VM_BUS_SPACE_PIO, DEBUG_EXIT_PORT, 1,
-				  &de->dev);
-	if (ret < 0) {
-		free(de);
-		return ret;
+	return_code = vm_bus_register_region(
+		VM_BUS_SPACE_PORT_IO, DEBUG_EXIT_BASE_PORT, 1, &state->device);
+	if (return_code < 0) {
+		free(state);
+		return return_code;
 	}
 
 	return 0;
@@ -79,10 +71,10 @@ static int debug_exit_create(struct machine *mach, void *platform_data)
 
 static const struct vm_device_class debug_exit_class = {
 	.name = "debug-exit",
-	.create = debug_exit_create,
+	.instantiate = debug_exit_instantiate,
 };
 
-static void __attribute__((constructor)) register_debug_exit(void)
+static void __attribute__((constructor)) register_debug_exit_class(void)
 {
 	vm_device_class_register(&debug_exit_class);
 }

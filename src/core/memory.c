@@ -3,84 +3,94 @@
 #include <string.h>
 #include <errno.h>
 
-#include <modvm/memory.h>
-#include <modvm/os_page.h>
-#include <modvm/log.h>
-#include <modvm/bug.h>
-#include <modvm/err.h>
+#include <modvm/core/memory.h>
+#include <modvm/os/page.h>
+#include <modvm/utils/log.h>
+#include <modvm/utils/bug.h>
+#include <modvm/utils/err.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "memory: " fmt
 
 /**
- * vm_memory_space_init - initialize the guest physical memory space
+ * vm_memory_space_init - initialize a fresh physical memory controller
+ * @space: the memory space context to initialize
+ * @map_callback: function to invoke when a new memory region needs hardware mapping
+ * @data: private context data passed to the map_callback
  *
- * Return: 0 on success, or -EINVAL if the context pointer is invalid.
+ * return: 0 on success, or a negative error code on invalid arguments.
  */
-int vm_memory_space_init(struct vm_memory_space *space, vm_mem_map_fn map_cb,
-			 void *opaque)
+int vm_memory_space_init(struct vm_memory_space *space,
+			 vm_memory_map_callback_t map_callback, void *data)
 {
 	if (WARN_ON(!space))
 		return -EINVAL;
 
 	INIT_LIST_HEAD(&space->regions);
-	space->total_ram = 0;
+	space->total_ram_bytes = 0;
 
-	/* Query the host OS for its native page size via the abstraction layer */
-	space->host_page_size = os_get_page_size();
-	space->arch_map_cb = map_cb;
-	space->arch_opaque = opaque;
+	space->host_page_size_bytes = os_page_get_size_bytes();
+	space->map_callback = map_callback;
+	space->map_data = data;
 
-	pr_debug("Initialized memory space. Host page size: %zu bytes\n",
-		 space->host_page_size);
+	pr_debug("initialized memory space, host page size: %zu bytes\n",
+		 space->host_page_size_bytes);
 
 	return 0;
 }
 
-/**
- * is_overlap - overflow-safe overlap detection
- */
-static bool is_overlap(uint64_t start1, uint64_t size1, uint64_t start2,
-		       uint64_t size2)
+static bool is_overlap(uint64_t start_address_1, uint64_t size_1,
+		       uint64_t start_address_2, uint64_t size_2)
 {
-	/* max(start1, start2) < min(end1, end2) */
-	return (start1 < start2 + size2) && (start2 < start1 + size1);
+	return (start_address_1 < start_address_2 + size_2) &&
+	       (start_address_2 < start_address_1 + size_1);
 }
 
 /**
- * vm_memory_region_add - register a contiguous block of physical memory
+ * vm_memory_region_add - register a contiguous physical memory bank
+ * @space: the memory space to attach this region to
+ * @guest_physical_address: the starting address as seen by the virtual processor
+ * @size_bytes: total capacity of the memory bank
+ * @access_flags: bitmask governing read/write/execute permissions
  *
- * Return: 0 on success, negative POSIX error code on failure.
+ * Allocates host backing memory and registers the mapping with the
+ * architecture-specific hypervisor backend. Ensures no address overlap
+ * occurs within the existing topology.
+ *
+ * return: 0 on success, negative error code on overlap, misalignment, or memory exhaustion.
  */
-int vm_memory_region_add(struct vm_memory_space *space, uint64_t gpa,
-			 uint64_t size, uint32_t flags)
+int vm_memory_region_add(struct vm_memory_space *space,
+			 uint64_t guest_physical_address, uint64_t size_bytes,
+			 uint32_t access_flags)
 {
 	struct vm_memory_region *region;
-	struct vm_memory_region *pos;
-	int ret;
+	struct vm_memory_region *position;
+	int return_code;
 
-	if (WARN_ON(!space || size == 0))
+	if (WARN_ON(!space || size_bytes == 0))
 		return -EINVAL;
 
-	/* Overflow protection */
-	if (WARN_ON(UINT64_MAX - gpa < size)) {
-		pr_err("Memory region GPA 0x%lx + size 0x%lx wraps around\n",
-		       gpa, size);
+	if (WARN_ON(UINT64_MAX - guest_physical_address < size_bytes)) {
+		pr_err("memory region 0x%lx + size 0x%lx wraps around\n",
+		       guest_physical_address, size_bytes);
 		return -EOVERFLOW;
 	}
 
-	/* Strictly enforce host page alignment */
-	if (WARN_ON(gpa % space->host_page_size != 0 ||
-		    size % space->host_page_size != 0)) {
-		pr_err("Region (GPA 0x%lx, size 0x%lx) not aligned to %zu bytes\n",
-		       gpa, size, space->host_page_size);
+	if (WARN_ON(guest_physical_address % space->host_page_size_bytes != 0 ||
+		    size_bytes % space->host_page_size_bytes != 0)) {
+		pr_err("region (address 0x%lx, size 0x%lx) not aligned to %zu bytes\n",
+		       guest_physical_address, size_bytes,
+		       space->host_page_size_bytes);
 		return -EINVAL;
 	}
 
-	list_for_each_entry(pos, &space->regions, node)
+	list_for_each_entry(position, &space->regions, node)
 	{
-		if (is_overlap(gpa, size, pos->gpa, pos->size)) {
-			pr_err("Overlap detected at GPA 0x%lx\n", gpa);
+		if (is_overlap(guest_physical_address, size_bytes,
+			       position->guest_physical_address,
+			       position->size_bytes)) {
+			pr_err("overlap detected at address 0x%lx\n",
+			       guest_physical_address);
 			return -EBUSY;
 		}
 	}
@@ -89,87 +99,94 @@ int vm_memory_region_add(struct vm_memory_space *space, uint64_t gpa,
 	if (!region)
 		return -ENOMEM;
 
-	/* Rely on the OS abstraction layer and catch pointer errors */
-	region->hva = os_alloc_pages(size);
-	if (IS_ERR(region->hva)) {
-		ret = PTR_ERR(region->hva);
-		pr_err("Failed to allocate backing host memory for GPA 0x%lx, err: %d\n",
-		       gpa, ret);
+	region->host_virtual_address = os_page_allocate(size_bytes);
+	if (IS_ERR(region->host_virtual_address)) {
+		return_code = PTR_ERR(region->host_virtual_address);
+		pr_err("failed to allocate backing host memory for address 0x%lx\n",
+		       guest_physical_address);
 		free(region);
-		return ret;
+		return return_code;
 	}
 
-	/* Prevent stale host data from leaking into the guest */
-	memset(region->hva, 0, size);
+	memset(region->host_virtual_address, 0, size_bytes);
 
-	region->gpa = gpa;
-	region->size = size;
-	region->flags = flags;
+	region->guest_physical_address = guest_physical_address;
+	region->size_bytes = size_bytes;
+	region->access_flags = access_flags;
 
-	/*
-	 * Notify the arch-specific hypervisor backend (KVM/WHPX) to map
-	 * this HVA to the GPA in the hardware extended page tables (EPT/NPT).
-	 */
-	if (space->arch_map_cb) {
-		ret = space->arch_map_cb(space, region, space->arch_opaque);
-		if (ret != 0) {
-			pr_err("Hypervisor backend failed to map GPA 0x%lx, err: %d\n",
-			       gpa, ret);
-			os_free_pages(region->hva, region->size);
+	if (space->map_callback) {
+		return_code =
+			space->map_callback(space, region, space->map_data);
+		if (return_code != 0) {
+			pr_err("hypervisor backend failed to map address 0x%lx\n",
+			       guest_physical_address);
+			os_page_free(region->host_virtual_address,
+				     region->size_bytes);
 			free(region);
-			return ret;
+			return return_code;
 		}
 	}
 
 	list_add_tail(&region->node, &space->regions);
-	space->total_ram += size;
+	space->total_ram_bytes += size_bytes;
 
-	pr_info("Registered memory region: GPA 0x%08lx - 0x%08lx (%lu MB)\n",
-		gpa, gpa + size - 1, size / (1024 * 1024));
+	pr_info("registered memory region: 0x%08lx - 0x%08lx (%lu MB)\n",
+		guest_physical_address, guest_physical_address + size_bytes - 1,
+		size_bytes / (1024 * 1024));
 
 	return 0;
 }
 
 /**
- * vm_memory_gpa_to_hva - translate guest physical address (GPA) to host virtual address (HVA)
+ * vm_memory_guest_to_host_address - resolve a guest physical address
+ * @space: the memory space containing the topology
+ * @guest_physical_address: the absolute physical address requested by the guest
  *
- * Return: a valid host pointer, or NULL if the GPA is unmapped.
+ * Performs a software page-walk of the registered memory regions.
+ *
+ * return: the corresponding host virtual address pointer, or NULL if the
+ * guest address points to unmapped physical space (e.g., an MMIO hole).
  */
-void *vm_memory_gpa_to_hva(struct vm_memory_space *space, uint64_t gpa)
+void *vm_memory_guest_to_host_address(struct vm_memory_space *space,
+				      uint64_t guest_physical_address)
 {
-	struct vm_memory_region *pos;
+	struct vm_memory_region *position;
 
-	list_for_each_entry(pos, &space->regions, node)
+	list_for_each_entry(position, &space->regions, node)
 	{
-		if (gpa >= pos->gpa && gpa < pos->gpa + pos->size) {
-			uint64_t offset = gpa - pos->gpa;
-			return (uint8_t *)pos->hva + offset;
+		if (guest_physical_address >=
+			    position->guest_physical_address &&
+		    guest_physical_address < position->guest_physical_address +
+						     position->size_bytes) {
+			uint64_t offset = guest_physical_address -
+					  position->guest_physical_address;
+			return (uint8_t *)position->host_virtual_address +
+			       offset;
 		}
 	}
 
-	/*
-	 * Returning NULL is architecturally correct here. Accessing unmapped
-	 * physical memory on real hardware causes a floating bus read or a
-	 * machine check exception, which the caller must handle.
-	 * 
-	 * Don't change it to ERRNO :)
-	 */
 	return NULL;
 }
 
+/**
+ * vm_memory_space_destroy - tear down the memory controller and free all backing RAM
+ * @space: the memory space to destroy
+ */
 void vm_memory_space_destroy(struct vm_memory_space *space)
 {
-	struct vm_memory_region *pos, *n;
+	struct vm_memory_region *position;
+	struct vm_memory_region *next_position;
 
 	if (!space)
 		return;
 
-	list_for_each_entry_safe(pos, n, &space->regions, node)
+	list_for_each_entry_safe(position, next_position, &space->regions, node)
 	{
-		list_del(&pos->node);
-		os_free_pages(pos->hva, pos->size);
-		free(pos);
+		list_del(&position->node);
+		os_page_free(position->host_virtual_address,
+			     position->size_bytes);
+		free(position);
 	}
 
-	space->total_ram = 0;
+	space->total_ram_bytes = 0;
 }

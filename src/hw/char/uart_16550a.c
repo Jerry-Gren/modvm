@@ -4,88 +4,74 @@
 #include <stdbool.h>
 #include <errno.h>
 
-#include <modvm/bus.h>
+#include <modvm/core/bus.h>
 #include <modvm/hw/serial_reg.h>
 #include <modvm/hw/serial.h>
-#include <modvm/compiler.h>
-#include <modvm/log.h>
-#include <modvm/bug.h>
-#include <modvm/os_thread.h>
+#include <modvm/utils/compiler.h>
+#include <modvm/utils/log.h>
+#include <modvm/utils/bug.h>
+#include <modvm/os/thread.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "uart_16550a: " fmt
 
 /**
  * struct uart_state - Internal state machine for the 16550A UART
- * @dev: Base virtual device structure for bus registration
- * @lock: Mutex to serialize access from multiple vCPU threads
- * @irq_pin: 
- * @irq: Hardware interrupt line number
- * @dll: Divisor Latch Low
- * @dlm: Divisor Latch High
- * @ier: Interrupt Enable Register
- * @fcr: FIFO Control Register
- * @lcr: Line Control Register
- * @mcr: Modem Control Register
- * @lsr: Line Status Register
- * @msr: Modem Status Register
- * @scr: Scratchpad Register
- * @thr: Transmit Holding Register (emulated outgoing buffer)
- * @rbr: Receive Buffer Register (emulated incoming buffer)
- * @thre_int_pending: Internal flip-flop for edge-triggered THRE interrupts
- *
- * Encapsulates all internal registers to emulate a standard PC16550D UART.
- * The mutex ensures that read-modify-write cycles on registers remain
- * atomic when targeted by parallel execution units.
+ * @device: Base virtual device structure for bus registration
+ * @hardware_lock: Mutex to serialize access from multiple executing processors
+ * @interrupt_pin: Hardware interrupt line connection to the system board
+ * @console_backend: Host character device handling the stream presentation
+ * @divisor_latch_low: Baud rate divisor register (low byte)
+ * @divisor_latch_high: Baud rate divisor register (high byte)
+ * @interrupt_enable: IER register caching enabled logical interrupt sources
+ * @fifo_control: FCR register caching queue depth configuration
+ * @line_control: LCR register caching frame formatting and parity settings
+ * @modem_control: MCR register governing output pins and local loopback
+ * @line_status: LSR register reflecting transmission and reception electrical states
+ * @modem_status: MSR register reflecting incoming modem control lines
+ * @scratchpad: SCR register providing general purpose storage
+ * @transmit_holding_buffer: Emulated outgoing data latch
+ * @receive_buffer: Emulated incoming data latch
+ * @transmit_interrupt_pending: Internal flip-flop for edge-triggered THRE interrupts
  */
 struct uart_state {
-	struct vm_device dev;
-	struct os_mutex *lock;
-	struct vm_irq *irq_pin;
-	struct vm_chardev *chr;
+	struct vm_device device;
+	struct os_mutex *hardware_lock;
+	struct vm_interrupt_line *interrupt_pin;
+	struct vm_character_device *console_backend;
 
-	uint8_t irq;
+	uint8_t divisor_latch_low;
+	uint8_t divisor_latch_high;
+	uint8_t interrupt_enable;
+	uint8_t fifo_control;
+	uint8_t line_control;
+	uint8_t modem_control;
+	uint8_t line_status;
+	uint8_t modem_status;
+	uint8_t scratchpad;
 
-	uint8_t dll;
-	uint8_t dlm;
-	uint8_t ier;
-	uint8_t fcr;
-	uint8_t lcr;
-	uint8_t mcr;
-	uint8_t lsr;
-	uint8_t msr;
-	uint8_t scr;
+	uint8_t transmit_holding_buffer;
+	uint8_t receive_buffer;
 
-	uint8_t thr;
-	uint8_t rbr;
-
-	bool thre_int_pending;
+	bool transmit_interrupt_pending;
 };
 
 /**
  * uart_is_dlab_set - check if the Divisor Latch Access Bit is enabled
  * @uart: pointer to the uart state machine
  */
-static inline bool uart_is_dlab_set(struct uart_state *uart)
+static inline bool uart_is_dlab_enabled(struct uart_state *uart)
 {
-	return (uart->lcr & UART_LCR_DLAB) != 0;
+	return (uart->line_control & UART_LCR_DLAB) != 0;
 }
 
-static inline bool uart_is_loopback(struct uart_state *uart)
+static inline bool uart_is_loopback_enabled(struct uart_state *uart)
 {
 	/* According to 8.6.7, MCR bit 4 enables local loopback feature */
-	return (uart->mcr & UART_MCR_LOOP) != 0;
+	return (uart->modem_control & UART_MCR_LOOP) != 0;
 }
 
-/**
- * uart_get_iir - dynamically synthesize the Interrupt Identification Register
- * @uart: the UART state machine
- *
- * Even without hardware interrupt injection, drivers read the IIR to determine
- * the logical state of the chip. We synthesize this based on enabled interrupts
- * (IER) and current line/modem status.
- */
-static uint8_t uart_get_iir(struct uart_state *uart)
+static uint8_t uart_synthesize_interrupt_identity(struct uart_state *uart)
 {
 	/*
          * Bits 6 and 7 are set to 1 if FIFOs are enabled.
@@ -93,85 +79,70 @@ static uint8_t uart_get_iir(struct uart_state *uart)
          * bitwise OR operations from accidentally clobbering the state
          * if the logic tree grows more complex in the future.
          */
-	uint8_t iir = (uart->fcr & UART_FCR_ENABLE_FIFO) ? 0xc0 : 0x00;
+	uint8_t identity_register =
+		(uart->fifo_control & UART_FCR_ENABLE_FIFO) ? 0xc0 : 0x00;
 
 	/* Priority 1: Receiver Line Status*/
-	if ((uart->ier & UART_IER_RLSI) &&
-	    (uart->lsr & UART_LSR_BRK_ERROR_BITS)) {
-		iir |= 0x06;
-		return iir;
+	if ((uart->interrupt_enable & UART_IER_RLSI) &&
+	    (uart->line_status & UART_LSR_BRK_ERROR_BITS)) {
+		identity_register |= 0x06;
+		return identity_register;
 	}
 
 	/*
 	 * Priority 2: Received Data Available.
 	 * Triggered if Data Ready (DR) is set AND the interrupt is enabled.
 	 */
-	if ((uart->ier & UART_IER_RDI) && (uart->lsr & UART_LSR_DR)) {
-		iir |= 0x04;
-		return iir;
+	if ((uart->interrupt_enable & UART_IER_RDI) &&
+	    (uart->line_status & UART_LSR_DR)) {
+		identity_register |= 0x04;
+		return identity_register;
 	}
 
 	/* Priority 3: Transmitter Holding Register Empty */
-	if ((uart->ier & UART_IER_THRI) && uart->thre_int_pending) {
-		iir |= 0x02;
-		return iir;
+	if ((uart->interrupt_enable & UART_IER_THRI) &&
+	    uart->transmit_interrupt_pending) {
+		identity_register |= 0x02;
+		return identity_register;
 	}
 
 	/* Priority 4: Modem Status */
-	if ((uart->ier & UART_IER_MSI) && (uart->msr & UART_MSR_ANY_DELTA)) {
-		iir |= 0x00;
-		return iir;
+	if ((uart->interrupt_enable & UART_IER_MSI) &&
+	    (uart->modem_status & UART_MSR_ANY_DELTA)) {
+		identity_register |= 0x00;
+		return identity_register;
 	}
 
 	/* No pending logical interrupts */
-	iir |= UART_IIR_NO_INT;
+	identity_register |= UART_IIR_NO_INT;
 
-	return iir;
+	return identity_register;
 }
-
-/**
- * uart_update_irq - evaluate internal state and drive the INTR pin
- * @uart: the UART state machine
- *
- * Analyzes the synthesized Interrupt Identification Register (IIR).
- * If any logical interrupt condition is met and unmasked, it asserts
- * the physical IRQ line into the virtual machine.
- */
-static void uart_update_irq(struct uart_state *uart)
+static void uart_evaluate_interrupt_pin(struct uart_state *uart)
 {
-	uint8_t iir;
-	int level;
-
-	iir = uart_get_iir(uart);
+	uint8_t identity_register = uart_synthesize_interrupt_identity(uart);
 
 	/*
          * Bit 0 of IIR is logic 0 when an interrupt is pending.
          * Otherwise, it is logic 1 (No interrupt pending).
          */
-	level = (iir & UART_IIR_NO_INT) ? 0 : 1;
+	int electrical_level = (identity_register & UART_IIR_NO_INT) ? 0 : 1;
 
-	vm_irq_set(uart->irq_pin, level);
+	vm_interrupt_line_set_level(uart->interrupt_pin, electrical_level);
 }
 
-/**
- * uart_update_msr - update Modem Status Register based on MCR
- * @uart: the UART state machine
- *
- * In loopback mode, the modem control outputs (DTR, RTS, OUT1, OUT2)
- * are internally routed to the modem control inputs (DSR, CTS, RI, DCD).
- */
-static void uart_update_msr(struct uart_state *uart)
+static void uart_synchronize_modem_status(struct uart_state *uart)
 {
-	uint8_t old_msr = uart->msr;
-	uint8_t new_msr = 0;
+	uint8_t previous_status = uart->modem_status;
+	uint8_t current_status = 0;
 
-	if (!uart_is_loopback(uart)) {
+	if (!uart_is_loopback_enabled(uart)) {
 		/*
 		 * In normal mode, MSR is driven by external hardware lines.
 		 * We simulate unconnected lines where Carrier Detect, Data Set Ready,
 		 * and Clear To Send are asserted (typical null-modem behavior).
 		 */
-		new_msr = UART_MSR_DCD | UART_MSR_DSR | UART_MSR_CTS;
+		current_status = UART_MSR_DCD | UART_MSR_DSR | UART_MSR_CTS;
 	} else {
 		/*
 		 * Loopback wiring mapping per Datasheet 8.6.7:
@@ -180,134 +151,131 @@ static void uart_update_msr(struct uart_state *uart)
 		 * MCR Bit 2 (OUT1) -> MSR Bit 6 (RI)
 		 * MCR Bit 3 (OUT2) -> MSR Bit 7 (DCD)
 		 */
-		if (uart->mcr & UART_MCR_DTR)
-			new_msr |= UART_MSR_DSR;
-		if (uart->mcr & UART_MCR_RTS)
-			new_msr |= UART_MSR_CTS;
-		if (uart->mcr & UART_MCR_OUT1)
-			new_msr |= UART_MSR_RI;
-		if (uart->mcr & UART_MCR_OUT2)
-			new_msr |= UART_MSR_DCD;
+		if (uart->modem_control & UART_MCR_DTR)
+			current_status |= UART_MSR_DSR;
+		if (uart->modem_control & UART_MCR_RTS)
+			current_status |= UART_MSR_CTS;
+		if (uart->modem_control & UART_MCR_OUT1)
+			current_status |= UART_MSR_RI;
+		if (uart->modem_control & UART_MCR_OUT2)
+			current_status |= UART_MSR_DCD;
 	}
 
-	uint8_t changed = ((old_msr ^ new_msr) &
-			   (UART_MSR_DCD | UART_MSR_DSR | UART_MSR_CTS)) >>
-			  4;
+	uint8_t toggled_bits = ((previous_status ^ current_status) &
+				(UART_MSR_DCD | UART_MSR_DSR | UART_MSR_CTS)) >>
+			       4;
 
 	/*
 	 * Trailing Edge of Ring Indicator (TERI).
 	 * Triggers when physical RI goes 0->1, which means MSR bit 6 goes 1->0
 	 * due to the pin complement logic described in the datasheet.
 	 */
-	if ((old_msr & UART_MSR_RI) && !(new_msr & UART_MSR_RI)) {
-		changed |= UART_MSR_TERI;
+	if ((previous_status & UART_MSR_RI) &&
+	    !(current_status & UART_MSR_RI)) {
+		toggled_bits |= UART_MSR_TERI;
 	}
 
-	uart->msr = new_msr | (old_msr & UART_MSR_ANY_DELTA) | changed;
+	uart->modem_status = current_status |
+			     (previous_status & UART_MSR_ANY_DELTA) |
+			     toggled_bits;
 }
 
-/**
- * uart_read_register
- *
- * Handles a single byte read from a specific UART offset.
- */
-static uint8_t uart_read_register(struct uart_state *uart, uint16_t offset)
+static uint8_t uart_read_hardware_register(struct uart_state *uart,
+					   uint16_t port_offset)
 {
-	uint8_t ret = 0;
+	uint8_t returned_value = 0;
 
-	switch (offset) {
+	switch (port_offset) {
 	case UART_RX:
-		if (uart_is_dlab_set(uart))
-			return uart->dll;
+		if (uart_is_dlab_enabled(uart))
+			return uart->divisor_latch_low;
 
-		ret = uart->rbr;
+		returned_value = uart->receive_buffer;
 		/*
 		 * Reading the Receiver Buffer clears the Data Ready (DR) bit
 		 * in the Line Status Register, per 8.6.3.
 		 */
-		uart->lsr &= ~UART_LSR_DR;
-		return ret;
+		uart->line_status &= ~UART_LSR_DR;
+		return returned_value;
 
 	case UART_IER:
-		if (uart_is_dlab_set(uart))
-			return uart->dlm;
-		return uart->ier;
+		if (uart_is_dlab_enabled(uart))
+			return uart->divisor_latch_high;
+		return uart->interrupt_enable;
 
 	case UART_IIR:
-		ret = uart_get_iir(uart);
+		returned_value = uart_synthesize_interrupt_identity(uart);
 		/*
 		 * Reading IIR acknowledges the THRE interrupt per datasheet.
 		 * Priority 3 mask is 0x02.
 		 */
-		if ((ret & 0x0f) == 0x02)
-			uart->thre_int_pending = false;
-		return ret;
+		if ((returned_value & 0x0f) == 0x02)
+			uart->transmit_interrupt_pending = false;
+		return returned_value;
 
 	case UART_LCR:
-		return uart->lcr;
+		return uart->line_control;
 
 	case UART_MCR:
-		return uart->mcr;
+		return uart->modem_control;
 
 	case UART_LSR:
 		/*
 		 * Physical state: transmission is infinitely fast,
 		 * so holding register and shift register are always empty.
 		 */
-		uart->lsr |= (UART_LSR_THRE | UART_LSR_TEMT);
-		ret = uart->lsr;
-		uart->lsr &= ~UART_LSR_BRK_ERROR_BITS;
-		return ret;
+		uart->line_status |= (UART_LSR_THRE | UART_LSR_TEMT);
+		returned_value = uart->line_status;
+		uart->line_status &= ~UART_LSR_BRK_ERROR_BITS;
+		return returned_value;
 
 	case UART_MSR:
-		ret = uart->msr;
+		returned_value = uart->modem_status;
 		/* Datasheet 8.6.8: Delta is cleared after CPU reads MSR */
-		uart->msr &= ~UART_MSR_ANY_DELTA;
-		return ret;
+		uart->modem_status &= ~UART_MSR_ANY_DELTA;
+		return returned_value;
 
 	case UART_SCR:
-		return uart->scr;
+		return uart->scratchpad;
 
 	default:
-		pr_warn_once("Read from unknown UART offset: 0x%x\n", offset);
+		pr_warn_once("read from unknown uart offset: 0x%x\n",
+			     port_offset);
 		return 0xff;
 	}
 }
 
-/**
- * uart_write_register - handle a single byte write to a specific UART offset
- *
- * Expected to be called with the hardware state lock held.
- */
-static void uart_write_register(struct uart_state *uart, uint16_t offset,
-				uint8_t val)
+static void uart_write_hardware_register(struct uart_state *uart,
+					 uint16_t port_offset, uint8_t payload)
 {
-	switch (offset) {
+	switch (port_offset) {
 	case UART_TX:
-		if (uart_is_dlab_set(uart)) {
-			uart->dll = val;
+		if (uart_is_dlab_enabled(uart)) {
+			uart->divisor_latch_low = payload;
 			return;
 		}
 
-		if (uart_is_loopback(uart)) {
+		if (uart_is_loopback_enabled(uart)) {
 			/*
 			 * In loopback mode, transmitted data is immediately
 			 * received in the Receive Buffer Register, and Data Ready
 			 * bit is set in LSR.
 			 */
-			if (uart->lsr & UART_LSR_DR) {
-				uart->lsr |= UART_LSR_OE;
+			if (uart->line_status & UART_LSR_DR) {
+				uart->line_status |= UART_LSR_OE;
 			} else {
-				uart->rbr = val;
-				uart->lsr |= UART_LSR_DR;
+				uart->receive_buffer = payload;
+				uart->line_status |= UART_LSR_DR;
 			}
 		} else {
 			/*
 			 * Dispatch the payload to the attached host backend.
 			 * The frontend hardware does not care how the backend processes it.
 			 */
-			if (uart->chr && uart->chr->ops->write)
-				uart->chr->ops->write(uart->chr, &val, 1);
+			if (uart->console_backend &&
+			    uart->console_backend->operations->write)
+				uart->console_backend->operations->write(
+					uart->console_backend, &payload, 1);
 		}
 
 		/**
@@ -318,61 +286,62 @@ static void uart_write_register(struct uart_state *uart, uint16_t offset,
                  * clear the THRE status bit in the LSR, reflecting the
                  * immediate consumption of the data.
                  */
-		uart->thre_int_pending = true;
+		uart->transmit_interrupt_pending = true;
 		/* uart->lsr &= ~UART_LSR_THRE; */
 		break;
 
 	case UART_IER: {
-		if (uart_is_dlab_set(uart)) {
-			uart->dlm = val;
+		if (uart_is_dlab_enabled(uart)) {
+			uart->divisor_latch_high = payload;
 			return;
 		}
 		/* 
 		 * Datasheet 8.6.3: IER bits 4-7 are always logic 0
 		 */
-		uint8_t old_ier = uart->ier;
-		uart->ier = val & 0x0f;
+		uint8_t previous_enable = uart->interrupt_enable;
+		uart->interrupt_enable = payload & 0x0f;
 
 		/*
 		 * If the THRE interrupt was just enabled, and the buffer is
 		 * currently empty (which it always is in our simulation),
 		 * the interrupt must fire immediately to satisfy OS IRQ probing.
 		 */
-		if (!(old_ier & UART_IER_THRI) && (uart->ier & UART_IER_THRI)) {
-			uart->thre_int_pending = true;
+		if (!(previous_enable & UART_IER_THRI) &&
+		    (uart->interrupt_enable & UART_IER_THRI)) {
+			uart->transmit_interrupt_pending = true;
 		}
 		break;
 	}
 
 	case UART_FCR:
 		/* Mask out reserved bits 4 and 5 (0xcf = 1100 1111) */
-		val &= 0xcf;
+		payload &= 0xcf;
 
 		/*
 		 * Datasheet 8.6.4:
 		 * 1. Writing 0 to bit 0 (ENABLE_FIFO) will disable other bits
 		 * 2. Writing 1 to bit 1 (CLEAR_RCVR) or bit 2 (CLEAR_XMIT) clears themselves
 		 */
-		if (!(val & UART_FCR_ENABLE_FIFO)) {
-			uart->fcr = val & UART_FCR_ENABLE_FIFO;
-			/* Disabling FIFOs automatically drops all queued data */
-			uart->lsr &= ~(UART_LSR_DR | UART_LSR_OE);
+		if (!(payload & UART_FCR_ENABLE_FIFO)) {
+			uart->fifo_control = payload & UART_FCR_ENABLE_FIFO;
+			uart->line_status &= ~(UART_LSR_DR | UART_LSR_OE);
 		} else {
-			uart->fcr = val & ~(UART_FCR_CLEAR_RCVR |
-					    UART_FCR_CLEAR_XMIT);
-			if (val & UART_FCR_CLEAR_RCVR)
-				uart->lsr &= ~(UART_LSR_DR | UART_LSR_OE);
+			uart->fifo_control = payload & ~(UART_FCR_CLEAR_RCVR |
+							 UART_FCR_CLEAR_XMIT);
+			if (payload & UART_FCR_CLEAR_RCVR)
+				uart->line_status &=
+					~(UART_LSR_DR | UART_LSR_OE);
 		}
 		break;
 
 	case UART_LCR:
-		uart->lcr = val;
+		uart->line_control = payload;
 		/* Emulate Break signal reflection in loopback mode */
-		if (uart_is_loopback(uart)) {
-			if (uart->lcr & UART_LCR_SBC)
-				uart->lsr |= UART_LSR_BI;
+		if (uart_is_loopback_enabled(uart)) {
+			if (uart->line_control & UART_LCR_SBC)
+				uart->line_status |= UART_LSR_BI;
 			else
-				uart->lsr &= ~UART_LSR_BI;
+				uart->line_status &= ~UART_LSR_BI;
 		}
 		break;
 
@@ -380,9 +349,9 @@ static void uart_write_register(struct uart_state *uart, uint16_t offset,
 		/*
 		 * Datasheet 8.6.7: MCR bits 5-7 are always logic 0
 		 */
-		uart->mcr = val & 0x1f;
+		uart->modem_control = payload & 0x1f;
 		/* Changing MCR requires re-evaluating MSR wiring */
-		uart_update_msr(uart);
+		uart_synchronize_modem_status(uart);
 		break;
 
 	case UART_LSR:
@@ -393,171 +362,171 @@ static void uart_write_register(struct uart_state *uart, uint16_t offset,
 		break;
 
 	case UART_SCR:
-		uart->scr = val;
+		uart->scratchpad = payload;
 		break;
 
 	default:
-		pr_warn_once("Write to unknown UART offset: 0x%x\n", offset);
+		pr_warn_once("write to unknown uart offset: 0x%x\n",
+			     port_offset);
 		break;
 	}
 }
 
-static uint64_t uart_read(struct vm_device *dev, uint64_t offset, uint8_t size)
+static uint64_t uart_bus_read(struct vm_device *device, uint64_t bus_offset,
+			      uint8_t access_size)
 {
-	struct uart_state *uart = dev->private_data;
-	uint64_t result = 0;
-	uint8_t i;
+	struct uart_state *uart = device->private_data;
+	uint64_t aggregated_result = 0;
+	uint8_t byte_index;
 
-	os_mutex_lock(uart->lock);
+	os_mutex_lock(uart->hardware_lock);
 
-	for (i = 0; i < size; i++) {
-		uint8_t val = uart_read_register(uart, offset + i);
-		result |= ((uint64_t)val << (i * 8));
+	for (byte_index = 0; byte_index < access_size; byte_index++) {
+		uint8_t register_value = uart_read_hardware_register(
+			uart, bus_offset + byte_index);
+		aggregated_result |=
+			((uint64_t)register_value << (byte_index * 8));
 	}
 
-	/* Reading registers may clear pending interrupts */
-	uart_update_irq(uart);
+	/* reading registers may clear pending interrupts */
+	uart_evaluate_interrupt_pin(uart);
+	os_mutex_unlock(uart->hardware_lock);
 
-	os_mutex_unlock(uart->lock);
-
-	return result;
+	return aggregated_result;
 }
 
-static void uart_write(struct vm_device *dev, uint64_t offset, uint64_t value,
-		       uint8_t size)
+static void uart_bus_write(struct vm_device *device, uint64_t bus_offset,
+			   uint64_t payload, uint8_t access_size)
 {
-	struct uart_state *uart = dev->private_data;
-	uint8_t i;
+	struct uart_state *uart = device->private_data;
+	uint8_t byte_index;
 
-	os_mutex_lock(uart->lock);
+	os_mutex_lock(uart->hardware_lock);
 
-	for (i = 0; i < size; i++) {
-		uint8_t val = (uint8_t)((value >> (i * 8)) & 0xff);
-		uart_write_register(uart, offset + i, val);
+	for (byte_index = 0; byte_index < access_size; byte_index++) {
+		uint8_t byte_slice =
+			(uint8_t)((payload >> (byte_index * 8)) & 0xff);
+		uart_write_hardware_register(uart, bus_offset + byte_index,
+					     byte_slice);
 	}
 
-	/* Writing registers may clear or trigger new interrupts */
-	uart_update_irq(uart);
-
-	os_mutex_unlock(uart->lock);
+	/* writing registers may clear or trigger new interrupts */
+	uart_evaluate_interrupt_pin(uart);
+	os_mutex_unlock(uart->hardware_lock);
 }
 
-/**
- * uart_receive_byte - hardware model callback for incoming data
- * @opaque: pointer to the internal uart_state
- * @buf: incoming byte stream from the host backend
- * @len: number of bytes available
- *
- * Simulates electrical signals arriving on the UART RX pin.
- */
-static void uart_receive_byte(void *opaque, const uint8_t *buf, size_t len)
+static void uart_handle_backend_data(void *context_data,
+				     const uint8_t *stream_buffer,
+				     size_t length)
 {
-	struct uart_state *uart = opaque;
-	size_t i;
+	struct uart_state *uart = context_data;
+	size_t data_index;
 
-	if (len == 0)
+	if (length == 0)
 		return;
 
-	os_mutex_lock(uart->lock);
+	os_mutex_lock(uart->hardware_lock);
 
 	/*
-	 * We currently emulate a 16450-style single-byte buffer (FIFO disabled).
-	 * In a robust implementation, we would queue this into the FCR-managed
-	 * FIFO ring buffer.
+	 * we currently emulate a 16450-style single-byte buffer (fifo disabled).
+	 * in a robust implementation, we would queue this into the fcr-managed
+	 * fifo ring buffer.
 	 */
-	for (i = 0; i < len; i++) {
+	for (data_index = 0; data_index < length; data_index++) {
 		/*
-		 * Overrun condition: previous character was not read by the CPU
-		 * before the next one arrived. The old character is overwritten.
+		 * overrun condition: previous character was not read by the cpu
+		 * before the next one arrived. the old character is overwritten.
 		 */
-		if (uart->lsr & UART_LSR_DR) {
-			uart->lsr |= UART_LSR_OE;
+		if (uart->line_status & UART_LSR_DR) {
+			uart->line_status |= UART_LSR_OE;
 		}
 
-		uart->rbr = buf[i];
-		uart->lsr |= UART_LSR_DR;
+		uart->receive_buffer = stream_buffer[data_index];
+		uart->line_status |= UART_LSR_DR;
 	}
 
-	/* Evaluate the interrupt lines after state mutation */
-	uart_update_irq(uart);
-
-	os_mutex_unlock(uart->lock);
+	/* evaluate the interrupt lines after state mutation */
+	uart_evaluate_interrupt_pin(uart);
+	os_mutex_unlock(uart->hardware_lock);
 }
 
-static const struct vm_device_ops uart_16550a_ops = {
-	.read = uart_read,
-	.write = uart_write,
+static const struct vm_device_operations uart_16550a_operations = {
+	.read = uart_bus_read,
+	.write = uart_bus_write,
 };
 
 /**
- * uart_16550a_create - allocate, initialize and register the UART device
+ * uart_16550a_instantiate - allocate and register the serial peripheral
+ * @machine: the container representing the host topology
+ * @platform_data: immutable routing configuration
  *
- * This function acts as the constructor for the UART object. It allocates
- * the state machine, configures default hardware states, and attaches
- * the routing callbacks to the system bus.
+ * return: 0 upon successful initialization, or a negative error code.
  */
-static int uart_16550a_create(struct machine *mach, void *platform_data)
+static int uart_16550a_instantiate(struct vm_machine *machine,
+				   void *platform_data)
 {
 	struct uart_state *uart;
-	struct serial_platform_data *pdata = platform_data;
-	int ret;
+	struct vm_serial_platform_data *config = platform_data;
+	int return_code;
 
-	(void)mach;
+	(void)machine;
 
-	/* Allocate state on heap to persist beyond the init sequence */
+	/* allocate state on heap to persist beyond the init sequence */
 	uart = calloc(1, sizeof(*uart));
 	if (!uart) {
-		pr_err("Failed to allocate memory for UART state\n");
+		pr_err("failed to allocate memory for serial state\n");
 		return -ENOMEM;
 	}
 
-	uart->lock = os_mutex_create();
-	uart->irq_pin = pdata->irq;
-	uart->chr = pdata->chr;
+	uart->hardware_lock = os_mutex_create();
+	uart->interrupt_pin = config->interrupt_line;
+	uart->console_backend = config->console_backend;
 
-	/* Bind the hardware reception pin to the backend data stream */
-	chardev_set_receive_cb(uart->chr, uart_receive_byte, uart);
+	/* bind the hardware reception pin to the backend data stream */
+	vm_character_device_set_receive_callback(
+		uart->console_backend, uart_handle_backend_data, uart);
 
-	uart->dev.name = "16550A";
-	uart->dev.ops = &uart_16550a_ops;
-	uart->dev.private_data = uart;
+	uart->device.name = "16550A";
+	uart->device.operations = &uart_16550a_operations;
+	uart->device.private_data = uart;
 
 	/*
-	 * Strict hardware reset states per Table 3.
+	 * strict hardware reset states per table 3.
 	 */
-	uart->ier = 0x00;
-	uart->fcr = 0x00;
-	uart->lcr = 0x00;
-	uart->mcr = 0x00;
-	uart->lsr = 0x60; /* 0110 0000 -> THRE and TEMT bits are high */
-	/* The TX buffer is empty on boot, causing an initial interrupt condition */
-	uart->thre_int_pending = true;
-	uart_update_msr(uart);
-	uart->msr &= ~UART_MSR_ANY_DELTA;
+	uart->interrupt_enable = 0x00;
+	uart->fifo_control = 0x00;
+	uart->line_control = 0x00;
+	uart->modem_control = 0x00;
+	uart->line_status = 0x60; /* 0110 0000 -> THRE and TEMT bits are high */
+	/* the TX buffer is empty on boot, causing an initial interrupt condition */
+	uart->transmit_interrupt_pending = true;
+	uart_synchronize_modem_status(uart);
+	uart->modem_status &= ~UART_MSR_ANY_DELTA;
 
 	/* Claim the 8 contiguous I/O ports on the motherboard bus */
-	ret = bus_register_region(VM_BUS_SPACE_PIO, pdata->base_port, 8,
-				  &uart->dev);
-	if (ret < 0) {
-		pr_err("Failed to register base_port PIO range, err: %d\n",
-		       ret);
-		os_mutex_destroy(uart->lock);
+	return_code = vm_bus_register_region(VM_BUS_SPACE_PORT_IO,
+					     config->base_port_address, 8,
+					     &uart->device);
+	if (return_code < 0) {
+		pr_err("failed to register serial I/O space, error: %d\n",
+		       return_code);
+		os_mutex_destroy(uart->hardware_lock);
 		free(uart);
-		return ret;
+		return return_code;
 	}
 
-	pr_info("Successfully initialized at PIO base 0x%03lx\n",
-		pdata->base_port);
+	pr_info("successfully initialized serial terminal at port 0x%03lx\n",
+		config->base_port_address);
 
 	return 0;
 }
 
 static const struct vm_device_class uart_class = {
 	.name = "uart-16550a",
-	.create = uart_16550a_create,
+	.instantiate = uart_16550a_instantiate,
 };
 
-static void __attribute__((constructor)) register_uart_16550a(void)
+static void __attribute__((constructor)) register_uart_class(void)
 {
 	vm_device_class_register(&uart_class);
 }
