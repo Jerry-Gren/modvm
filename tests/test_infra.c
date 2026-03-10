@@ -17,191 +17,158 @@
 #undef pr_fmt
 #define pr_fmt(fmt) "test_infra: " fmt
 
-struct mock_hardware_device {
-	uint32_t control_register;
-	uint32_t status_register;
+struct mock_dev {
+	uint32_t ctrl_reg;
+	uint32_t stat_reg;
 
-	struct_group(dma_registers, uint32_t dma_source;
-		     uint32_t dma_destination;);
+	struct_group(dma_regs, uint32_t dma_src; uint32_t dma_dst;);
 
-	DECLARE_FLEX_ARRAY(uint8_t, fifo_buffer);
+	DECLARE_FLEX_ARRAY(uint8_t, fifo);
 };
 
-ASSERT_STRUCT_OFFSET(struct mock_hardware_device, control_register, 0);
-ASSERT_STRUCT_OFFSET(struct mock_hardware_device, status_register, 4);
-ASSERT_STRUCT_OFFSET(struct mock_hardware_device, dma_source, 8);
-ASSERT_STRUCT_OFFSET(struct mock_hardware_device, fifo_buffer, 16);
+ASSERT_STRUCT_OFFSET(struct mock_dev, ctrl_reg, 0);
+ASSERT_STRUCT_OFFSET(struct mock_dev, stat_reg, 4);
+ASSERT_STRUCT_OFFSET(struct mock_dev, dma_src, 8);
+ASSERT_STRUCT_OFFSET(struct mock_dev, fifo, 16);
 
 static_assert(__same_type(uint32_t, unsigned int), "type matching failed");
 
-struct virtual_machine_task {
-	int processor_id;
-	const char *task_name;
-	struct list_head scheduler_link;
-	struct hlist_node hash_table_link;
+struct vm_task {
+	int id;
+	const char *name;
+	struct list_head node;
+	struct hlist_node hnode;
 };
 
-static void evaluate_container_of_macro(void)
+static void test_container_of(void)
 {
-	struct virtual_machine_task parent_task = { .processor_id = 42 };
-	struct list_head *link_pointer = &parent_task.scheduler_link;
+	struct vm_task parent = { .id = 42 };
+	struct list_head *link = &parent.node;
 
-	struct virtual_machine_task *recovered_task = container_of(
-		link_pointer, struct virtual_machine_task, scheduler_link);
+	struct vm_task *recovered = container_of(link, struct vm_task, node);
 
-	if (WARN_ON(recovered_task->processor_id != 42)) {
+	if (WARN_ON(recovered->id != 42))
 		vm_panic("container_of macro mapping failed\n");
-	}
+
 	pr_info("container_of structural translation passed\n");
 }
 
-static void evaluate_doubly_linked_list(void)
+static void test_list(void)
 {
 	LIST_HEAD(run_queue);
 
-	struct virtual_machine_task task_one = { .processor_id = 1,
-						 .task_name = "init" };
-	struct virtual_machine_task task_two = { .processor_id = 2,
-						 .task_name = "network" };
-	struct virtual_machine_task task_three = { .processor_id = 3,
-						   .task_name = "block_io" };
+	struct vm_task t1 = { .id = 1, .name = "init" };
+	struct vm_task t2 = { .id = 2, .name = "network" };
+	struct vm_task t3 = { .id = 3, .name = "block_io" };
 
-	list_add_tail(&task_one.scheduler_link, &run_queue);
-	list_add_tail(&task_two.scheduler_link, &run_queue);
-	list_add_tail(&task_three.scheduler_link, &run_queue);
+	list_add_tail(&t1.node, &run_queue);
+	list_add_tail(&t2.node, &run_queue);
+	list_add_tail(&t3.node, &run_queue);
 
-	if (WARN_ON(list_empty(&run_queue))) {
+	if (WARN_ON(list_empty(&run_queue)))
 		vm_panic("queue should not be empty after insertions\n");
-	}
 
-	struct virtual_machine_task *current_task;
-	struct virtual_machine_task *next_task;
-	int expected_identifier = 1;
+	struct vm_task *pos, *n;
+	int expected_id = 1;
 
-	list_for_each_entry_safe(current_task, next_task, &run_queue,
-				 scheduler_link)
+	list_for_each_entry_safe(pos, n, &run_queue, node)
 	{
-		pr_debug("scheduling task: %s (processor %d)\n",
-			 current_task->task_name, current_task->processor_id);
+		pr_debug("scheduling task: %s (id %d)\n", pos->name, pos->id);
 
-		if (current_task->processor_id != expected_identifier++) {
+		if (pos->id != expected_id++)
 			vm_panic(
 				"linked list topological ordering corrupted\n");
-		}
 
-		list_del_init(&current_task->scheduler_link);
+		list_del_init(&pos->node);
 	}
 
-	if (WARN_ON(!list_empty(&run_queue))) {
-		vm_panic(
-			"list node deletion failed, architectural artifacts remain\n");
-	}
+	if (WARN_ON(!list_empty(&run_queue)))
+		vm_panic("list node deletion failed, artifacts remain\n");
 
 	pr_info("doubly-linked list memory operations passed\n");
 }
 
-struct mock_timer_state {
-	uint32_t execution_ticks;
-	bool interrupt_enabled;
+struct mock_timer_ctx {
+	uint32_t ticks;
+	bool irq_en;
 };
 
-static uint64_t mock_timer_hardware_read(struct vm_device *device,
-					 uint64_t register_offset,
-					 uint8_t access_size)
+static uint64_t mock_timer_read(struct vm_device *dev, uint64_t offset,
+				uint8_t size)
 {
-	struct mock_timer_state *state = device->private_data;
+	struct mock_timer_ctx *ctx = dev->priv;
 
-	if (WARN_ON(access_size == 0))
+	if (WARN_ON(size == 0))
 		return 0;
 
-	if (register_offset == 0) {
-		return state->execution_ticks++;
-	}
+	if (offset == 0)
+		return ctx->ticks++;
+
 	return 0;
 }
 
-static void mock_timer_hardware_write(struct vm_device *device,
-				      uint64_t register_offset,
-				      uint64_t payload, uint8_t access_size)
+static void mock_timer_write(struct vm_device *dev, uint64_t offset,
+			     uint64_t val, uint8_t size)
 {
-	struct mock_timer_state *state = device->private_data;
-	(void)access_size;
+	struct mock_timer_ctx *ctx = dev->priv;
+	(void)size;
 
-	if (register_offset == 0) {
-		state->execution_ticks = (uint32_t)payload;
-	} else if (register_offset == 3) {
-		state->interrupt_enabled = (payload == 1);
-	}
+	if (offset == 0)
+		ctx->ticks = (uint32_t)val;
+	else if (offset == 3)
+		ctx->irq_en = (val == 1);
 }
 
-static const struct vm_device_operations mock_timer_operations = {
-	.read = mock_timer_hardware_read,
-	.write = mock_timer_hardware_write,
+static const struct vm_device_ops mock_timer_ops = {
+	.read = mock_timer_read,
+	.write = mock_timer_write,
 };
 
-static void evaluate_system_bus_routing(void)
+static void test_bus_routing(void)
 {
-	struct mock_timer_state timer_internal_state = {
-		.execution_ticks = 100, .interrupt_enabled = false
-	};
-	struct vm_device timer_peripheral = {
+	struct mock_timer_ctx timer_ctx = { .ticks = 100, .irq_en = false };
+	struct vm_device timer_dev = {
 		.name = "mock_timer",
-		.operations = &mock_timer_operations,
-		.private_data = &timer_internal_state,
+		.ops = &mock_timer_ops,
+		.priv = &timer_ctx,
 	};
-	struct vm_device dummy_peripheral = {
+	struct vm_device dummy_dev = {
 		.name = "dummy",
-		.operations = &mock_timer_operations,
+		.ops = &mock_timer_ops,
 	};
 
-	int return_code;
-	uint64_t read_value;
-	uint64_t unmapped_value;
+	int ret;
+	uint64_t val;
 
-	pr_info("evaluating system bus topological routing and isolation\n");
+	pr_info("evaluating system bus topological routing\n");
 
-	return_code = vm_bus_register_region(VM_BUS_SPACE_PORT_IO, 0x40, 4,
-					     &timer_peripheral);
-	if (WARN_ON(return_code != 0)) {
-		vm_panic("failed to register port io peripheral\n");
-	}
+	ret = vm_bus_register_region(VM_BUS_PIO, 0x40, 4, &timer_dev);
+	if (WARN_ON(ret != 0))
+		vm_panic("failed to register pio peripheral\n");
 
-	return_code = vm_bus_register_region(VM_BUS_SPACE_PORT_IO, 0x42, 1,
-					     &dummy_peripheral);
-	if (WARN_ON(return_code == 0)) {
+	ret = vm_bus_register_region(VM_BUS_PIO, 0x42, 1, &dummy_dev);
+	if (WARN_ON(ret == 0))
 		vm_panic("bus permitted overlapping address registration\n");
-	}
 
-	return_code = vm_bus_register_region(VM_BUS_SPACE_MEMORY_MAPPED_IO,
-					     0x42, 1, &dummy_peripheral);
-	if (WARN_ON(return_code != 0)) {
-		vm_panic(
-			"bus failed to isolate port io and memory mapped io spaces\n");
-	}
+	ret = vm_bus_register_region(VM_BUS_MMIO, 0x42, 1, &dummy_dev);
+	if (WARN_ON(ret != 0))
+		vm_panic("bus failed to isolate pio and mmio spaces\n");
 
-	vm_bus_dispatch_write(VM_BUS_SPACE_PORT_IO, 0x40, 500, 4);
-	if (WARN_ON(timer_internal_state.execution_ticks != 500)) {
-		vm_panic(
-			"write routing failed to mutate peripheral hardware state\n");
-	}
+	vm_bus_dispatch_write(VM_BUS_PIO, 0x40, 500, 4);
+	if (WARN_ON(timer_ctx.ticks != 500))
+		vm_panic("write routing failed to mutate state\n");
 
-	read_value = vm_bus_dispatch_read(VM_BUS_SPACE_PORT_IO, 0x40, 4);
-	if (WARN_ON(read_value != 500)) {
-		vm_panic("read routing returned incorrect payload data: %lu\n",
-			 read_value);
-	}
+	val = vm_bus_dispatch_read(VM_BUS_PIO, 0x40, 4);
+	if (WARN_ON(val != 500))
+		vm_panic("read routing returned incorrect data: %lu\n", val);
 
-	if (WARN_ON(timer_internal_state.execution_ticks != 501)) {
-		vm_panic(
-			"hardware internal state machine failed to tick upon read\n");
-	}
+	if (WARN_ON(timer_ctx.ticks != 501))
+		vm_panic("hardware state machine failed to tick upon read\n");
 
-	unmapped_value = vm_bus_dispatch_read(VM_BUS_SPACE_PORT_IO, 0x3F8, 1);
-	if (WARN_ON(unmapped_value != ~0ULL)) {
-		vm_panic(
-			"unmapped port returned %lx instead of floating high state\n",
-			unmapped_value);
-	}
+	val = vm_bus_dispatch_read(VM_BUS_PIO, 0x3f8, 1);
+	if (WARN_ON(val != ~0ULL))
+		vm_panic("unmapped port returned %lx instead of high state\n",
+			 val);
 
 	pr_info("bus routing and topology isolation passed\n");
 }
@@ -210,9 +177,9 @@ int main(void)
 {
 	pr_info("initiating modvm infrastructure diagnostic sequence\n");
 
-	evaluate_container_of_macro();
-	evaluate_doubly_linked_list();
-	evaluate_system_bus_routing();
+	test_container_of();
+	test_list();
+	test_bus_routing();
 
 	pr_info("SUCCESS: all core infrastructure checks completed\n");
 	return 0;

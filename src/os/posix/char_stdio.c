@@ -7,7 +7,7 @@
 #include <errno.h>
 #include <termios.h>
 
-#include <modvm/core/character_device.h>
+#include <modvm/core/chardev.h>
 #include <modvm/core/event_loop.h>
 #include <modvm/utils/log.h>
 
@@ -23,13 +23,10 @@ struct stdio_ctx {
 	size_t tx_len;
 };
 
-static int stdio_write_stream(struct vm_character_device *dev,
-			      const uint8_t *buf, size_t len)
+static int stdio_write(struct vm_chardev *dev, const uint8_t *buf, size_t len)
 {
-	struct stdio_ctx *ctx = dev->private_data;
+	struct stdio_ctx *ctx = dev->priv;
 	size_t i;
-
-	(void)dev;
 
 	for (i = 0; i < len; i++) {
 		ctx->tx_buf[ctx->tx_len++] = buf[i];
@@ -43,12 +40,10 @@ static int stdio_write_stream(struct vm_character_device *dev,
 			ssize_t ret =
 				write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len);
 
-			if (ret < 0 && errno != EAGAIN &&
-			    errno != EWOULDBLOCK) {
+			if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
 				pr_warn_once(
 					"untracked standard output write error %d\n",
 					errno);
-			}
 
 			ctx->tx_len = 0;
 		}
@@ -58,14 +53,14 @@ static int stdio_write_stream(struct vm_character_device *dev,
 }
 
 /**
- * stdio_read_event_handler - invoked by the global event loop when STDIN has data.
+ * stdio_rx_cb - invoked by the global event loop when STDIN has data.
  * @fd: the STDIN file descriptor.
  * @events: bitmask of triggered poll events.
  * @data: pointer to the character device instance.
  */
-static void stdio_read_event_handler(int fd, uint32_t events, void *data)
+static void stdio_rx_cb(int fd, uint32_t events, void *data)
 {
-	struct vm_character_device *dev = data;
+	struct vm_chardev *dev = data;
 	uint8_t rx_buf[64];
 	ssize_t ret;
 
@@ -73,26 +68,25 @@ static void stdio_read_event_handler(int fd, uint32_t events, void *data)
 		return;
 
 	ret = read(fd, rx_buf, sizeof(rx_buf));
-	if (ret > 0 && dev->receive_callback)
-		dev->receive_callback(dev->receive_data, rx_buf, ret);
+	if (ret > 0 && dev->rx_cb)
+		dev->rx_cb(dev->rx_data, rx_buf, ret);
 }
 
-static const struct vm_character_device_operations stdio_ops = {
-	.write = stdio_write_stream,
+static const struct vm_chardev_ops stdio_ops = {
+	.write = stdio_write,
 };
 
 /**
- * vm_character_device_stdio_create - hijack host terminal for guest serial output
+ * vm_chardev_stdio_create - hijack host terminal for guest serial output.
  *
- * Configures the host standard input/output to operate in non-blocking raw mode,
- * preventing the host OS from interpreting special characters (like Ctrl+C),
- * so they can be forwarded directly to the guest OS.
+ * Configures the host standard input/output to operate in non-blocking
+ * raw mode, preventing the host OS from interpreting special characters.
  *
  * return: an allocated character device object, or NULL on failure.
  */
-struct vm_character_device *vm_character_device_stdio_create(void)
+struct vm_chardev *vm_chardev_stdio_create(void)
 {
-	struct vm_character_device *dev;
+	struct vm_chardev *dev;
 	struct stdio_ctx *ctx;
 	struct termios raw;
 	int flags;
@@ -106,8 +100,8 @@ struct vm_character_device *vm_character_device_stdio_create(void)
 	}
 
 	dev->name = "stdio";
-	dev->operations = &stdio_ops;
-	dev->private_data = ctx;
+	dev->ops = &stdio_ops;
+	dev->priv = ctx;
 
 	flags = fcntl(STDOUT_FILENO, F_GETFL, 0);
 	if (flags != -1)
@@ -124,30 +118,29 @@ struct vm_character_device *vm_character_device_stdio_create(void)
 		tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 	}
 
-	vm_event_loop_add_file_descriptor(STDIN_FILENO, VM_EVENT_READ,
-					  stdio_read_event_handler, dev);
+	vm_event_loop_add_fd(STDIN_FILENO, VM_EVENT_READ, stdio_rx_cb, dev);
 
 	return dev;
 }
 
 /**
- * vm_character_device_stdio_destroy - release terminal and restore host settings
- * @device: the character device to tear down
+ * vm_chardev_stdio_destroy - release terminal and restore host settings.
+ * @dev: The character device to tear down.
  */
-void vm_character_device_stdio_destroy(struct vm_character_device *dev)
+void vm_chardev_stdio_destroy(struct vm_chardev *dev)
 {
 	struct stdio_ctx *ctx;
 
 	if (!dev)
 		return;
 
-	ctx = dev->private_data;
+	ctx = dev->priv;
 
 	/* flush if buffer is not empty when exit */
 	if (ctx->tx_len > 0)
 		write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len);
 
-	vm_event_loop_remove_file_descriptor(STDIN_FILENO);
+	vm_event_loop_rm_fd(STDIN_FILENO);
 
 	if (ctx->is_saved)
 		tcsetattr(STDIN_FILENO, TCSANOW, &ctx->orig_termios);

@@ -8,120 +8,114 @@
 #include <modvm/utils/compiler.h>
 #include <modvm/core/loader.h>
 #include <modvm/hw/serial.h>
-#include <modvm/core/interrupt_line.h>
+#include <modvm/core/irq.h>
 
 #undef pr_fmt
-#define pr_fmt(fmt) "x86_pc: " fmt
+#define pr_fmt(fmt) "pc_board: " fmt
 
-struct pc_interrupt_route {
-	struct vm_hypervisor *hypervisor;
-	uint32_t global_interrupt_line;
+struct pc_irq_route {
+	struct vm_hypervisor *hv;
+	uint32_t gsi;
 };
 
-static void pc_interrupt_handler(void *context_data, int level)
+static void pc_irq_handler(void *data, int level)
 {
-	struct pc_interrupt_route *route = context_data;
-	vm_hypervisor_set_interrupt_line(route->hypervisor,
-					 route->global_interrupt_line, level);
+	struct pc_irq_route *route = data;
+	vm_hypervisor_set_irq(route->hv, route->gsi, level);
 }
 
 /**
- * machine_pc_initialize - assemble the legacy x86 personal computer topology
- * @machine: the machine instance being constructed
+ * pc_board_init - Assemble the legacy x86 personal computer topology.
+ * @machine: The machine instance being constructed.
  *
- * Wires up standard legacy components such as the serial port at PIO 0x3f8
- * and custom hypervisor exit devices. Also initializes the hardware IRQ chips.
+ * Wires up legacy components such as the serial port at PIO 0x3f8.
  *
- * return: 0 upon successful assembly, or a negative error code.
+ * Return: 0 upon successful assembly, or a negative error code.
  */
-static int machine_pc_initialize(struct vm_machine *machine)
+static int pc_board_init(struct vm_machine *machine)
 {
-	int return_code;
-	struct vm_serial_platform_data serial_config;
-	struct pc_interrupt_route *serial_route;
+	struct serial_pdata serial_pdata;
+	struct pc_irq_route *serial_route;
+	int ret;
 
-	return_code =
-		vm_hypervisor_setup_interrupt_controller(&machine->hypervisor);
-	if (return_code < 0) {
-		pr_err("failed to initialize architectural interrupt routing\n");
-		return return_code;
+	ret = vm_hypervisor_setup_irqchip(&machine->hv);
+	if (ret < 0) {
+		pr_err("failed to initialize architectural irqchip\n");
+		return ret;
 	}
 
 	serial_route = calloc(1, sizeof(*serial_route));
 	if (!serial_route)
 		return -ENOMEM;
 
-	serial_route->hypervisor = &machine->hypervisor;
-	serial_route->global_interrupt_line = 4;
+	serial_route->hv = &machine->hv;
+	serial_route->gsi = 4;
 
-	serial_config.base_port_address = 0x3f8;
-	serial_config.console_backend = machine->config.primary_console_backend;
-	serial_config.interrupt_line =
-		vm_interrupt_line_allocate(pc_interrupt_handler, serial_route);
+	serial_pdata.base = 0x3f8;
+	serial_pdata.console = machine->config.console;
+	serial_pdata.irq = vm_irq_alloc(pc_irq_handler, serial_route);
 
-	return_code = vm_device_create(machine, "uart-16550a", &serial_config);
-	if (return_code < 0) {
+	ret = vm_device_create(machine, "uart-16550a", &serial_pdata);
+	if (ret < 0) {
 		pr_err("failed to instantiate primary serial console\n");
-		return return_code;
+		return ret;
 	}
 
-	return_code = vm_device_create(machine, "debug-exit", NULL);
-	if (return_code < 0) {
+	ret = vm_device_create(machine, "debug-exit", NULL);
+	if (ret < 0) {
 		pr_err("failed to instantiate debug exit device\n");
-		return return_code;
+		return ret;
 	}
 
 	return 0;
 }
 
 /**
- * machine_pc_reset - orchestrate the boot sequence for the PC architecture
- * @machine: the machine instance to reset
+ * pc_board_reset - Orchestrate the boot sequence for the PC architecture.
+ * @machine: The machine instance to reset.
  *
- * Loads the firmware payload into memory and points the bootstrap processor
- * to the reset vector.
+ * Loads the firmware payload into memory and points the bootstrap
+ * processor to the reset vector.
  *
- * return: 0 on success, or a negative error code.
+ * Return: 0 on success, or a negative error code.
  */
-static int machine_pc_reset(struct vm_machine *machine)
+static int pc_board_reset(struct vm_machine *machine)
 {
-	int return_code;
-	uint64_t boot_instruction_pointer = 0x0000;
+	uint64_t boot_pc = 0x0000;
+	int ret;
 
 	if (machine->config.firmware_path) {
-		return_code = vm_loader_load_raw_image(
-			&machine->hypervisor.memory_space,
-			machine->config.firmware_path,
-			boot_instruction_pointer);
-		if (return_code < 0) {
+		ret = vm_loader_load_raw(&machine->hv.mem_space,
+					 machine->config.firmware_path,
+					 boot_pc);
+		if (ret < 0) {
 			pr_err("failed to map firmware payload: %s\n",
 			       machine->config.firmware_path);
-			return return_code;
+			return ret;
 		}
 	}
 
-	return_code = vm_virtual_cpu_set_instruction_pointer(
-		machine->virtual_cpus[0], boot_instruction_pointer);
-	if (return_code < 0) {
-		pr_err("failed to configure bootstrap processor instruction pointer\n");
-		return return_code;
+	ret = vm_vcpu_set_pc(machine->vcpus[0], boot_pc);
+	if (ret < 0) {
+		pr_err("failed to configure bootstrap processor pc\n");
+		return ret;
 	}
 
 	return 0;
 }
 
-static const struct vm_machine_operations pc_machine_operations = {
-	.init = machine_pc_initialize,
-	.reset = machine_pc_reset,
+static const struct vm_machine_ops pc_ops = {
+	.init = pc_board_init,
+	.reset = pc_board_reset,
 };
 
-static const struct vm_machine_class pc_machine_class = {
+static const struct vm_machine_class pc_class = {
 	.name = "pc",
-	.description = "Standard x86 Personal Computer",
-	.operations = &pc_machine_operations,
+	.desc = "Standard x86 Personal Computer",
+	.ops = &pc_ops,
 };
 
-static void __attribute__((constructor)) register_pc_machine_class(void)
+static void __attribute__((constructor)) register_pc_class(void)
 {
-	vm_machine_class_register(&pc_machine_class);
+	vm_machine_class_register(&pc_class);
 }

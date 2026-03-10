@@ -7,29 +7,28 @@
 #include <modvm/os/thread.h>
 
 /**
- * struct vm_hypervisor - represents the core virtualization engine context
- * @memory_space: the physical memory controller managing guest mappings
- * @hypervisor_private_data: opaque pointer to the underlying accelerator state
- * @is_running: thread-safe power state monitored by all executing processors
+ * struct vm_hypervisor - the virtualization engine context.
+ * @mem_space: physical memory controller managing guest mappings.
+ * @priv: opaque pointer to the underlying accelerator state.
+ * @is_running: thread-safe power state monitored by all executing processors.
+ * @init_mutex: synchronization lock for vCPU startup phase.
  *
- * This structure establishes the execution boundary. It securely isolates
- * the architecture-agnostic core logic from the specific hypervisor backend
- * implementation details, preventing host platform header leakage.
+ * Secures the architecture-agnostic core logic from specific backend
+ * details, preventing host platform header leakage.
  */
 struct vm_hypervisor {
-	struct vm_memory_space memory_space;
-	void *hypervisor_private_data;
+	struct vm_mem_space mem_space;
+	void *priv;
 	atomic_bool is_running;
-	struct os_mutex *startup_synchronization_lock;
+	struct os_mutex *init_mutex;
 };
 
-int vm_hypervisor_create(struct vm_hypervisor *hypervisor);
+int vm_hypervisor_create(struct vm_hypervisor *hv);
 
-int vm_hypervisor_setup_interrupt_controller(struct vm_hypervisor *hypervisor);
+int vm_hypervisor_setup_irqchip(struct vm_hypervisor *hv);
 
-int vm_hypervisor_set_interrupt_line(struct vm_hypervisor *hypervisor,
-				     uint32_t line_number, int level);
+int vm_hypervisor_set_irq(struct vm_hypervisor *hv, uint32_t irq, int level);
 
-void vm_hypervisor_destroy(struct vm_hypervisor *hypervisor);
+void vm_hypervisor_destroy(struct vm_hypervisor *hv);
 
 #endif /* MODVM_CORE_HYPERVISOR_H */

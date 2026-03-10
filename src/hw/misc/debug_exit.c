@@ -12,58 +12,49 @@
 #undef pr_fmt
 #define pr_fmt(fmt) "debug_exit: " fmt
 
-struct debug_exit_state {
-	struct vm_device device;
-	struct vm_machine *machine_context;
+struct debug_exit_ctx {
+	struct vm_device dev;
+	struct vm_machine *machine;
 };
 
-static void debug_exit_write(struct vm_device *device, uint64_t offset,
-			     uint64_t value, uint8_t access_size)
+static void debug_exit_write(struct vm_device *dev, uint64_t offset,
+			     uint64_t val, uint8_t size)
 {
-	struct debug_exit_state *state = device->private_data;
+	struct debug_exit_ctx *ctx = dev->priv;
 
 	(void)offset;
-	(void)access_size;
+	(void)size;
 
-	pr_info("guest requested power off (exit code 0x%lx)\n", value);
-	vm_machine_request_shutdown(state->machine_context);
+	pr_info("guest requested power off (exit code 0x%lx)\n", val);
+	vm_machine_request_shutdown(ctx->machine);
 }
 
-static const struct vm_device_operations debug_exit_operations = {
+static const struct vm_device_ops debug_exit_ops = {
 	.write = debug_exit_write,
 };
 
-/**
- * debug_exit_instantiate - create the debug exit hardware object
- * @machine: the topological container
- * @platform_data: unused for this specific device
- *
- * Registers a single I/O port that allows guest firmware to trigger
- * a graceful shutdown of the host virtualization engine.
- */
-static int debug_exit_instantiate(struct vm_machine *machine,
-				  void *platform_data)
+static int debug_exit_instantiate(struct vm_machine *machine, void *pdata)
 {
-	struct debug_exit_state *state;
-	int return_code;
+	struct debug_exit_ctx *ctx;
+	int ret;
 
-	(void)platform_data;
+	(void)pdata;
 
-	state = calloc(1, sizeof(*state));
-	if (!state)
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx)
 		return -ENOMEM;
 
-	state->machine_context = machine;
+	ctx->machine = machine;
 
-	state->device.name = "DEBUG_EXIT";
-	state->device.operations = &debug_exit_operations;
-	state->device.private_data = state;
+	ctx->dev.name = "debug-exit";
+	ctx->dev.ops = &debug_exit_ops;
+	ctx->dev.priv = ctx;
 
-	return_code = vm_bus_register_region(
-		VM_BUS_SPACE_PORT_IO, DEBUG_EXIT_BASE_PORT, 1, &state->device);
-	if (return_code < 0) {
-		free(state);
-		return return_code;
+	ret = vm_bus_register_region(VM_BUS_PIO, DEBUG_EXIT_BASE_PORT, 1,
+				     &ctx->dev);
+	if (ret < 0) {
+		free(ctx);
+		return ret;
 	}
 
 	return 0;

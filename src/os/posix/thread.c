@@ -115,27 +115,27 @@ int os_thread_join(struct os_thread *thread)
 }
 
 /**
- * os_thread_send_wakeup_signal - asynchronously interrupt a thread
+ * os_thread_send_wakeup - asynchronously interrupt a thread
  * @thread: the target thread to wake up
  *
  * Sends the dynamically allocated system wakeup signal to the target thread.
  * This is primarily used to break a vCPU thread out of a blocking KVM_RUN
  * ioctl during system shutdown or hardware interrupt injection.
  */
-void os_thread_send_wakeup_signal(struct os_thread *thread)
+void os_thread_send_wakeup(struct os_thread *thread)
 {
 	if (thread && wakeup_signum != -1)
 		pthread_kill(thread->handle, wakeup_signum);
 }
 
 /**
- * os_thread_block_wakeup_signal - mask the wakeup signal for the current thread
+ * os_thread_block_wakeup - mask the wakeup signal for the current thread
  *
  * Blocks the wakeup signal at the host OS scheduler level. vCPU threads MUST
  * call this immediately upon entry to prevent consuming the signal in userspace
  * before transferring control to the hardware virtualization extensions.
  */
-void os_thread_block_wakeup_signal(void)
+void os_thread_block_wakeup(void)
 {
 	sigset_t mask;
 

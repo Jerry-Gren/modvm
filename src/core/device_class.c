@@ -12,38 +12,39 @@
 
 #define MAX_DEVICE_CLASSES 64
 
-static const struct vm_device_class *device_class_registry[MAX_DEVICE_CLASSES];
-static int registered_device_class_count = 0;
+static const struct vm_device_class *device_classes[MAX_DEVICE_CLASSES];
+static int nr_device_classes = 0;
 
-void vm_device_class_register(const struct vm_device_class *device_class)
+/**
+ * vm_device_class_register - register a new device blueprint.
+ * @cls: the device class to register.
+ */
+void vm_device_class_register(const struct vm_device_class *cls)
 {
-	if (registered_device_class_count < MAX_DEVICE_CLASSES) {
-		device_class_registry[registered_device_class_count++] =
-			device_class;
-	}
+	if (nr_device_classes < MAX_DEVICE_CLASSES)
+		device_classes[nr_device_classes++] = cls;
 }
 
 /**
- * vm_device_create - instantiate a hardware peripheral from its class blueprint
- * @machine: the target machine topological container
- * @name: the unique string identifier of the requested device class
- * @platform_data: hardwired topological routing data
+ * vm_device_create - instantiate a hardware peripheral from its blueprint.
+ * @machine: the target machine topological container.
+ * @name: the unique string identifier of the requested device class.
+ * @pdata: hardwired topological routing data.
  *
  * return: 0 upon successful instantiation, or a negative error code.
  */
-int vm_device_create(struct vm_machine *machine, const char *name,
-		     void *platform_data)
+int vm_device_create(struct vm_machine *machine, const char *name, void *pdata)
 {
-	int index;
+	int i;
 
 	if (!machine || !name)
 		return -EINVAL;
 
-	for (index = 0; index < registered_device_class_count; index++) {
-		if (strcmp(device_class_registry[index]->name, name) == 0) {
-			if (device_class_registry[index]->instantiate)
-				return device_class_registry[index]->instantiate(
-					machine, platform_data);
+	for (i = 0; i < nr_device_classes; i++) {
+		if (strcmp(device_classes[i]->name, name) == 0) {
+			if (device_classes[i]->instantiate)
+				return device_classes[i]->instantiate(machine,
+								      pdata);
 			return -ENOTSUP;
 		}
 	}

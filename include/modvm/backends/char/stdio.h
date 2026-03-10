@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef MODVM_BACKENDS_CHARACTER_STDIO_H
-#define MODVM_BACKENDS_CHARACTER_STDIO_H
+#ifndef MODVM_BACKENDS_CHAR_STDIO_H
+#define MODVM_BACKENDS_CHAR_STDIO_H
 
-struct vm_character_device;
+struct vm_chardev;
 
-struct vm_character_device *vm_character_device_stdio_create(void);
+struct vm_chardev *vm_chardev_stdio_create(void);
 
-void vm_character_device_stdio_destroy(struct vm_character_device *device);
+void vm_chardev_stdio_destroy(struct vm_chardev *dev);
 
-#endif /* MODVM_BACKENDS_CHARACTER_STDIO_H */
+#endif /* MODVM_BACKENDS_CHAR_STDIO_H */

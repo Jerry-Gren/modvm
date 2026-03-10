@@ -3,7 +3,7 @@
 #include <errno.h>
 #include <string.h>
 
-#include <modvm/core/virtual_cpu.h>
+#include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
 #include <modvm/utils/log.h>
 
@@ -13,9 +13,9 @@
 #define pr_fmt(fmt) "kvm_x86: " fmt
 
 /**
- * kvm_arch_vcpu_set_pc - set the instruction pointer for x86_64
- * @cpu: the virtual processor
- * @pc: the physical address to begin execution
+ * kvm_arch_vcpu_set_pc - set the instruction pointer for x86_64.
+ * @vcpu: the virtual processor.
+ * @pc: the physical address to begin execution.
  *
  * Configures the code segment and instruction pointer registers
  * to prepare the vCPU for 16-bit real mode execution at the given
@@ -23,20 +23,18 @@
  *
  * return: 0 on success, or a negative error code.
  */
-int kvm_arch_vcpu_set_pc(struct vm_virtual_cpu *cpu, uint64_t pc)
+int kvm_arch_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
 {
-	struct vm_kvm_virtual_cpu_state *state = cpu->hypervisor_private_data;
+	struct kvm_vcpu_state *state = vcpu->priv;
 	struct kvm_sregs sregs;
 	struct kvm_regs regs;
 
-	if (ioctl(state->virtual_cpu_file_descriptor, KVM_GET_SREGS, &sregs) <
-	    0)
+	if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &sregs) < 0)
 		return -errno;
 
 	sregs.cs.selector = 0;
 	sregs.cs.base = 0;
-	if (ioctl(state->virtual_cpu_file_descriptor, KVM_SET_SREGS, &sregs) <
-	    0)
+	if (ioctl(state->vcpu_fd, KVM_SET_SREGS, &sregs) < 0)
 		return -errno;
 
 	memset(&regs, 0, sizeof(regs));
@@ -44,23 +42,23 @@ int kvm_arch_vcpu_set_pc(struct vm_virtual_cpu *cpu, uint64_t pc)
 	/* RFLAGS bit 1 must always be 1 according to the x86 architecture manual */
 	regs.rflags = 0x2;
 
-	if (ioctl(state->virtual_cpu_file_descriptor, KVM_SET_REGS, &regs) < 0)
+	if (ioctl(state->vcpu_fd, KVM_SET_REGS, &regs) < 0)
 		return -errno;
 
 	return 0;
 }
 
 /**
- * kvm_arch_vcpu_handle_exit - handle architecture-specific KVM exits
- * @cpu: the virtual processor
- * @run: the kvm_run structure containing exit state
+ * kvm_arch_vcpu_handle_exit - handle architecture-specific KVM exits.
+ * @vcpu: the virtual processor.
+ * @run: the kvm_run structure containing exit state.
  *
  * Handles x86-specific exits such as Port I/O and triple faults.
  *
  * return: 0 if the exit was handled and execution should continue,
  * or a negative error code to abort execution.
  */
-int kvm_arch_vcpu_handle_exit(struct vm_virtual_cpu *cpu, struct kvm_run *run)
+int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run)
 {
 	uint16_t port;
 	uint8_t size;
@@ -90,11 +88,11 @@ int kvm_arch_vcpu_handle_exit(struct vm_virtual_cpu *cpu, struct kvm_run *run)
 					break;
 				}
 
-				vm_bus_dispatch_write(VM_BUS_SPACE_PORT_IO,
-						      port, val, size);
+				vm_bus_dispatch_write(VM_BUS_PIO, port, val,
+						      size);
 			} else {
-				uint64_t val = vm_bus_dispatch_read(
-					VM_BUS_SPACE_PORT_IO, port, size);
+				uint64_t val = vm_bus_dispatch_read(VM_BUS_PIO,
+								    port, size);
 
 				switch (size) {
 				case 1:
@@ -113,13 +111,11 @@ int kvm_arch_vcpu_handle_exit(struct vm_virtual_cpu *cpu, struct kvm_run *run)
 		return 0;
 
 	case KVM_EXIT_SHUTDOWN:
-		pr_err("virtual processor %d triggered a fatal triple fault\n",
-		       cpu->cpu_id);
+		pr_err("vcpu %d triggered a fatal triple fault\n", vcpu->id);
 		return -EFAULT;
 
 	default:
-		pr_warn("unhandled architecture-specific hypervisor exit: %d\n",
-			run->exit_reason);
+		pr_warn("unhandled arch exit: %d\n", run->exit_reason);
 		return -ENOTSUP;
 	}
 }

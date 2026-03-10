@@ -11,67 +11,63 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
-#include <modvm/core/character_device.h>
-#include <modvm/core/interrupt_line.h>
+#include <modvm/core/chardev.h>
+#include <modvm/core/irq.h>
 #include <modvm/hw/serial.h>
 #include <modvm/backends/char/stdio.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "test_machine: " fmt
 
-static const uint8_t bare_metal_guest_payload[] = {
-	0xba, 0xf8, 0x03, 0xb0, 0x4f, 0xee, 0xb0, 0x4b, 0xee, 0xb0, 0x0d,
-	0xee, 0xb0, 0x0a, 0xee, 0xba, 0x00, 0x05, 0xb0, 0x01, 0xee, 0xf4
+static const uint8_t fw_payload[] = { 0xba, 0xf8, 0x03, 0xb0, 0x4f, 0xee,
+				      0xb0, 0x4b, 0xee, 0xb0, 0x0d, 0xee,
+				      0xb0, 0x0a, 0xee, 0xba, 0x00, 0x05,
+				      0xb0, 0x01, 0xee, 0xf4 };
+
+struct mock_irq_route {
+	struct vm_hypervisor *hv;
+	uint32_t gsi;
 };
 
-struct mock_interrupt_route {
-	struct vm_hypervisor *hypervisor;
-	uint32_t global_interrupt_line;
-};
-
-static void mock_interrupt_handler(void *context_data, int level)
+static void mock_irq_handler(void *data, int level)
 {
-	struct mock_interrupt_route *route = context_data;
-	vm_hypervisor_set_interrupt_line(route->hypervisor,
-					 route->global_interrupt_line, level);
+	struct mock_irq_route *route = data;
+	vm_hypervisor_set_irq(route->hv, route->gsi, level);
 }
 
-static int mock_machine_initialize(struct vm_machine *machine)
+static int mock_machine_init(struct vm_machine *machine)
 {
-	int return_code;
-	struct vm_serial_platform_data serial_configuration;
-	struct mock_interrupt_route *serial_interrupt_route;
+	struct serial_pdata pdata;
+	struct mock_irq_route *route;
+	int ret;
 
-	return_code =
-		vm_hypervisor_setup_interrupt_controller(&machine->hypervisor);
-	if (return_code < 0) {
-		pr_err("failed to initialize architectural interrupt controller\n");
-		return return_code;
+	ret = vm_hypervisor_setup_irqchip(&machine->hv);
+	if (ret < 0) {
+		pr_err("failed to initialize architectural irqchip\n");
+		return ret;
 	}
 
-	serial_interrupt_route = calloc(1, sizeof(*serial_interrupt_route));
-	if (!serial_interrupt_route)
+	route = calloc(1, sizeof(*route));
+	if (!route)
 		return -ENOMEM;
-	serial_interrupt_route->hypervisor = &machine->hypervisor;
-	serial_interrupt_route->global_interrupt_line = 4;
 
-	serial_configuration.base_port_address = 0x3f8;
-	serial_configuration.console_backend =
-		machine->config.primary_console_backend;
-	serial_configuration.interrupt_line = vm_interrupt_line_allocate(
-		mock_interrupt_handler, serial_interrupt_route);
+	route->hv = &machine->hv;
+	route->gsi = 4;
 
-	return_code =
-		vm_device_create(machine, "uart-16550a", &serial_configuration);
-	if (return_code < 0) {
+	pdata.base = 0x3f8;
+	pdata.console = machine->config.console;
+	pdata.irq = vm_irq_alloc(mock_irq_handler, route);
+
+	ret = vm_device_create(machine, "uart-16550a", &pdata);
+	if (ret < 0) {
 		pr_err("failed to probe uart peripheral\n");
-		return return_code;
+		return ret;
 	}
 
-	return_code = vm_device_create(machine, "debug-exit", NULL);
-	if (return_code < 0) {
+	ret = vm_device_create(machine, "debug-exit", NULL);
+	if (ret < 0) {
 		pr_err("failed to probe debug exit device\n");
-		return return_code;
+		return ret;
 	}
 
 	pr_info("mock hardware topology injected successfully\n");
@@ -80,80 +76,77 @@ static int mock_machine_initialize(struct vm_machine *machine)
 
 static int mock_machine_reset(struct vm_machine *machine)
 {
-	void *host_virtual_address;
-	int return_code;
+	void *hva;
+	int ret;
 
-	host_virtual_address = vm_memory_guest_to_host_address(
-		&machine->hypervisor.memory_space, 0x0000);
-	if (IS_ERR_OR_NULL(host_virtual_address)) {
-		pr_err("failed to translate address 0x0000 for payload injection\n");
+	hva = vm_mem_gpa_to_hva(&machine->hv.mem_space, 0x0000);
+	if (IS_ERR_OR_NULL(hva)) {
+		pr_err("failed to translate gpa 0x0000 for payload injection\n");
 		return -EFAULT;
 	}
 
-	memcpy(host_virtual_address, bare_metal_guest_payload,
-	       sizeof(bare_metal_guest_payload));
+	memcpy(hva, fw_payload, sizeof(fw_payload));
 	pr_info("injected %zu bytes of machine code into guest memory\n",
-		sizeof(bare_metal_guest_payload));
+		sizeof(fw_payload));
 
-	return_code = vm_virtual_cpu_set_instruction_pointer(
-		machine->virtual_cpus[0], 0x0000);
-	if (return_code < 0)
-		return return_code;
+	ret = vm_vcpu_set_pc(machine->vcpus[0], 0x0000);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
 
-static const struct vm_machine_operations mock_machine_operations = {
-	.init = mock_machine_initialize,
+static const struct vm_machine_ops mock_ops = {
+	.init = mock_machine_init,
 	.reset = mock_machine_reset,
 };
 
-static const struct vm_machine_class mock_machine_class = {
+static const struct vm_machine_class mock_class = {
 	.name = "mock",
-	.description = "Mock machine for integration testing",
-	.operations = &mock_machine_operations,
+	.desc = "Mock machine for integration testing",
+	.ops = &mock_ops,
 };
 
-static void execute_machine_lifecycle_test(void)
+static void test_machine_lifecycle(void)
 {
-	struct vm_machine virtual_machine;
-	struct vm_character_device *console_backend;
-	int return_code;
+	struct vm_machine vm;
+	struct vm_chardev *console;
+	int ret;
 
-	console_backend = vm_character_device_stdio_create();
-	if (WARN_ON(!console_backend))
-		vm_panic("failed to create character backend\n");
+	console = vm_chardev_stdio_create();
+	if (WARN_ON(!console))
+		vm_panic("failed to create console backend\n");
 
-	struct vm_machine_config configuration = {
-		.memory_base_address = 0x0000,
-		.memory_size_bytes = 4096,
-		.processor_count = 1,
+	struct vm_machine_config cfg = {
+		.ram_base = 0x0000,
+		.ram_size = 4096,
+		.nr_vcpus = 1,
 		.firmware_path = NULL,
-		.machine_class = &mock_machine_class,
-		.primary_console_backend = console_backend,
+		.machine_class = &mock_class,
+		.console = console,
 	};
 
 	pr_info("initiating motherboard initialization sequence\n");
 
-	return_code = vm_machine_init(&virtual_machine, &configuration);
-	if (WARN_ON(return_code < 0))
+	ret = vm_machine_init(&vm, &cfg);
+	if (WARN_ON(ret < 0))
 		vm_panic("machine assembly failed\n");
 
 	pr_info("igniting processor cores\n");
 
-	return_code = vm_machine_run(&virtual_machine);
-	if (WARN_ON(return_code < 0))
+	ret = vm_machine_run(&vm);
+	if (WARN_ON(ret < 0))
 		vm_panic("hypervisor runtime encountered fatal error\n");
 
 	pr_info("tearing down virtualization context\n");
-	vm_machine_destroy(&virtual_machine);
-	vm_character_device_stdio_destroy(console_backend);
+	vm_machine_destroy(&vm);
+	vm_chardev_stdio_destroy(console);
 }
 
 int main(void)
 {
-	pr_info("Initiating ModVM machine architecture integration test\n");
-	execute_machine_lifecycle_test();
+	pr_info("Initiating ModVM machine integration test\n");
+	test_machine_lifecycle();
 	pr_info("SUCCESS: machine architecture test concluded gracefully\n");
 	return 0;
 }

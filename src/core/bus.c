@@ -15,105 +15,94 @@
  * initialization phase before virtual processors are energized. Thus,
  * lockless iteration during hypervisor VM-exits is safe.
  */
-static LIST_HEAD(port_io_regions);
-static LIST_HEAD(memory_mapped_io_regions);
+static LIST_HEAD(pio_regions);
+static LIST_HEAD(mmio_regions);
 
 /**
- * vm_bus_register_region - map a device into the system address space
- * @space_type: indicates whether this is port I/O or memory-mapped I/O
- * @base_address: absolute starting address on the system bus
- * @length_bytes: size of the claimed region in bytes
- * @device: the peripheral device owning this region
+ * vm_bus_register_region - map a device into the system address space.
+ * @type: indicates whether this is PIO or MMIO.
+ * @base: absolute starting address on the system bus.
+ * @size: size of the claimed region in bytes.
+ * @dev: the peripheral device owning this region.
  *
  * Scans the existing topology for overlapping regions to prevent
  * hardware resource collisions before registering the new mapping.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_bus_register_region(enum vm_bus_space_type space_type,
-			   uint64_t base_address, uint64_t length_bytes,
-			   struct vm_device *device)
+int vm_bus_register_region(enum vm_bus_type type, uint64_t base, uint64_t size,
+			   struct vm_device *dev)
 {
-	struct vm_bus_region *region;
-	struct vm_bus_region *position;
-	struct list_head *target_list;
+	struct vm_bus_region *reg;
+	struct vm_bus_region *pos;
+	struct list_head *list;
 
-	if (WARN_ON(!device || !device->operations || length_bytes == 0))
+	if (WARN_ON(!dev || !dev->ops || size == 0))
 		return -EINVAL;
 
-	target_list = (space_type == VM_BUS_SPACE_PORT_IO) ?
-			      &port_io_regions :
-			      &memory_mapped_io_regions;
+	list = (type == VM_BUS_PIO) ? &pio_regions : &mmio_regions;
 
-	list_for_each_entry(position, target_list, node)
+	list_for_each_entry(pos, list, node)
 	{
-		if (base_address <
-			    position->base_address + position->length_bytes &&
-		    base_address + length_bytes > position->base_address) {
-			pr_err("bus conflict detected at base address 0x%lx\n",
-			       base_address);
+		if (base < pos->base + pos->size && base + size > pos->base) {
+			pr_err("bus conflict detected at base 0x%lx\n", base);
 			return -EBUSY;
 		}
 	}
 
-	region = calloc(1, sizeof(*region));
-	if (!region)
+	reg = calloc(1, sizeof(*reg));
+	if (!reg)
 		return -ENOMEM;
 
-	region->device = device;
-	region->base_address = base_address;
-	region->length_bytes = length_bytes;
-	region->space_type = space_type;
+	reg->dev = dev;
+	reg->base = base;
+	reg->size = size;
+	reg->type = type;
 
-	list_add_tail(&region->node, target_list);
+	list_add_tail(&reg->node, list);
 
 	pr_debug("registered '%s' to space %d at 0x%lx\n",
-		 device->name ? device->name : "unknown", space_type,
-		 base_address);
+		 dev->name ? dev->name : "unknown", type, base);
 
 	return 0;
 }
 
 /**
- * vm_bus_dispatch_read - route a read request to the appropriate peripheral
- * @space_type: the target address space (Port I/O or MMIO)
- * @address: the absolute physical address requested by the virtual processor
- * @access_size: the width of the read operation in bytes
+ * vm_bus_dispatch_read - route a read request to the appropriate peripheral.
+ * @type: the target address space (PIO or MMIO).
+ * @addr: the absolute physical address requested by the vCPU.
+ * @size: the width of the read operation in bytes.
  *
  * Resolves the device mapping and translates the absolute bus address
- * into a relative offset for the device driver. Includes strict boundary
- * checking to prevent cross-device or out-of-bounds reads.
+ * into a relative offset for the device driver.
  *
- * return: the data returned by the device, or all 1s (~0ULL) for unmapped regions.
+ * return: the data returned by the device, or ~0ULL for unmapped regions.
  */
-uint64_t vm_bus_dispatch_read(enum vm_bus_space_type space_type,
-			      uint64_t address, uint8_t access_size)
+uint64_t vm_bus_dispatch_read(enum vm_bus_type type, uint64_t addr,
+			      uint8_t size)
 {
-	struct vm_bus_region *position;
-	struct list_head *target_list;
+	struct vm_bus_region *pos;
+	struct list_head *list;
 	uint64_t offset;
 
-	target_list = (space_type == VM_BUS_SPACE_PORT_IO) ?
-			      &port_io_regions :
-			      &memory_mapped_io_regions;
+	list = (type == VM_BUS_PIO) ? &pio_regions : &mmio_regions;
 
-	list_for_each_entry(position, target_list, node)
+	list_for_each_entry(pos, list, node)
 	{
-		if (address >= position->base_address &&
-		    address < position->base_address + position->length_bytes) {
-			offset = address - position->base_address;
+		if (addr >= pos->base && addr < pos->base + pos->size) {
+			offset = addr - pos->base;
 
 			/* Strict boundary enforcement to prevent hypervisor out-of-bounds access */
-			if (offset + access_size > position->length_bytes) {
+			if (offset + size > pos->size) {
 				pr_warn("cross-boundary read intercepted at offset 0x%lx\n",
 					offset);
 				return ~0ULL;
 			}
 
-			if (position->device->operations->read) {
-				return position->device->operations->read(
-					position->device, offset, access_size);
-			}
+			if (pos->dev->ops->read)
+				return pos->dev->ops->read(pos->dev, offset,
+							   size);
+
 			return 0;
 		}
 	}
@@ -123,44 +112,37 @@ uint64_t vm_bus_dispatch_read(enum vm_bus_space_type space_type,
 }
 
 /**
- * vm_bus_dispatch_write - route a write request to the appropriate peripheral
- * @space_type: the target address space (Port I/O or MMIO)
- * @address: the absolute physical address targeted by the virtual processor
- * @value: the payload to be written
- * @access_size: the width of the write operation in bytes
- *
- * Includes boundary checks. Writes to unmapped regions or across device
- * boundaries are safely dropped (acting as a bit bucket).
+ * vm_bus_dispatch_write - Route a write request to the appropriate peripheral.
+ * @type: The target address space (PIO or MMIO).
+ * @addr: The absolute physical address targeted by the vCPU.
+ * @val: The payload to be written.
+ * @size: The width of the write operation in bytes.
  */
-void vm_bus_dispatch_write(enum vm_bus_space_type space_type, uint64_t address,
-			   uint64_t value, uint8_t access_size)
+void vm_bus_dispatch_write(enum vm_bus_type type, uint64_t addr, uint64_t val,
+			   uint8_t size)
 {
-	struct vm_bus_region *position;
-	struct list_head *target_list;
+	struct vm_bus_region *pos;
+	struct list_head *list;
 	uint64_t offset;
 
-	target_list = (space_type == VM_BUS_SPACE_PORT_IO) ?
-			      &port_io_regions :
-			      &memory_mapped_io_regions;
+	list = (type == VM_BUS_PIO) ? &pio_regions : &mmio_regions;
 
-	list_for_each_entry(position, target_list, node)
+	list_for_each_entry(pos, list, node)
 	{
-		if (address >= position->base_address &&
-		    address < position->base_address + position->length_bytes) {
-			offset = address - position->base_address;
+		if (addr >= pos->base && addr < pos->base + pos->size) {
+			offset = addr - pos->base;
 
 			/* Strict boundary enforcement */
-			if (offset + access_size > position->length_bytes) {
+			if (offset + size > pos->size) {
 				pr_warn("cross-boundary write intercepted at offset 0x%lx\n",
 					offset);
 				return;
 			}
 
-			if (position->device->operations->write) {
-				position->device->operations->write(
-					position->device, offset, value,
-					access_size);
-			}
+			if (pos->dev->ops->write)
+				pos->dev->ops->write(pos->dev, offset, val,
+						     size);
+
 			return;
 		}
 	}

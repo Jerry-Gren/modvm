@@ -6,15 +6,15 @@
 #include <modvm/core/machine.h>
 #include <modvm/core/loader.h>
 #include <modvm/utils/log.h>
-#include <modvm/core/character_device.h>
+#include <modvm/core/chardev.h>
 #include <modvm/backends/char/stdio.h>
 
 #undef pr_fmt
-#define pr_fmt(fmt) "hypervisor_main: " fmt
+#define pr_fmt(fmt) "main: " fmt
 
-static void print_execution_usage(const char *program_name)
+static void print_usage(const char *prog_name)
 {
-	fprintf(stderr, "Usage: %s [options]\n\n", program_name);
+	fprintf(stderr, "Usage: %s [options]\n\n", prog_name);
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr,
 		"  -machine <name>  select emulated machine type (default: pc)\n");
@@ -27,107 +27,83 @@ static void print_execution_usage(const char *program_name)
 	fprintf(stderr, "  -h               show this help message\n");
 }
 
-int main(int argument_count, char **argument_values)
+int main(int argc, char **argv)
 {
-	struct vm_machine virtual_machine;
-	struct vm_machine_config machine_configuration = {
-		.memory_base_address = 0x0000,
-		.memory_size_bytes = 16 * 1024 * 1024,
-		.processor_count = 1,
+	struct vm_machine vm;
+	struct vm_machine_config cfg = {
+		.ram_base = 0x0000,
+		.ram_size = 16 * 1024 * 1024,
+		.nr_vcpus = 1,
 		.firmware_path = NULL,
 		.machine_class = NULL,
-		.primary_console_backend = NULL,
+		.console = NULL,
 	};
 
-	const char *requested_machine_name = "pc";
-	int argument_index;
-	int return_code;
+	const char *mach_name = "pc";
+	int i, ret;
 
 	vm_log_initialize();
-
 	pr_info("starting modvm hypervisor engine\n");
 
-	for (argument_index = 1; argument_index < argument_count;
-	     argument_index++) {
-		if (strcmp(argument_values[argument_index], "-h") == 0) {
-			print_execution_usage(argument_values[0]);
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-h") == 0) {
+			print_usage(argv[0]);
 			return 0;
-		} else if (strcmp(argument_values[argument_index],
-				  "-machine") == 0 &&
-			   argument_index + 1 < argument_count) {
-			requested_machine_name =
-				argument_values[++argument_index];
-		} else if (strcmp(argument_values[argument_index], "-m") == 0 &&
-			   argument_index + 1 < argument_count) {
-			machine_configuration.memory_size_bytes =
-				(size_t)atoi(
-					argument_values[++argument_index]) *
-				1024 * 1024;
-		} else if (strcmp(argument_values[argument_index], "-smp") ==
-				   0 &&
-			   argument_index + 1 < argument_count) {
-			machine_configuration.processor_count =
-				(unsigned int)atoi(
-					argument_values[++argument_index]);
-		} else if (strcmp(argument_values[argument_index], "-kernel") ==
-				   0 &&
-			   argument_index + 1 < argument_count) {
-			machine_configuration.firmware_path =
-				argument_values[++argument_index];
+		} else if (strcmp(argv[i], "-machine") == 0 && i + 1 < argc) {
+			mach_name = argv[++i];
+		} else if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
+			cfg.ram_size = (size_t)atoi(argv[++i]) * 1024 * 1024;
+		} else if (strcmp(argv[i], "-smp") == 0 && i + 1 < argc) {
+			cfg.nr_vcpus = (unsigned int)atoi(argv[++i]);
+		} else if (strcmp(argv[i], "-kernel") == 0 && i + 1 < argc) {
+			cfg.firmware_path = argv[++i];
 		} else {
-			pr_err("unknown option: %s\n",
-			       argument_values[argument_index]);
-			print_execution_usage(argument_values[0]);
+			pr_err("unknown option: %s\n", argv[i]);
+			print_usage(argv[0]);
 			return EXIT_FAILURE;
 		}
 	}
 
-	if (!machine_configuration.firmware_path) {
+	if (!cfg.firmware_path) {
 		pr_err("no firmware or kernel image specified. use -kernel <file>\n");
 		return EXIT_FAILURE;
 	}
 
-	machine_configuration.machine_class =
-		vm_machine_class_find(requested_machine_name);
-	if (!machine_configuration.machine_class) {
-		pr_err("unsupported machine type '%s'\n",
-		       requested_machine_name);
+	cfg.machine_class = vm_machine_class_find(mach_name);
+	if (!cfg.machine_class) {
+		pr_err("unsupported machine type '%s'\n", mach_name);
 		return EXIT_FAILURE;
 	}
 
-	/* instantiate the stdio backend object dynamically */
-	machine_configuration.primary_console_backend =
-		vm_character_device_stdio_create();
-	if (!machine_configuration.primary_console_backend) {
-		pr_err("failed to create standard io character backend\n");
+	cfg.console = vm_chardev_stdio_create();
+	if (!cfg.console) {
+		pr_err("failed to create standard io console backend\n");
 		return EXIT_FAILURE;
 	}
 
-	return_code = vm_machine_init(&virtual_machine, &machine_configuration);
-	if (return_code < 0) {
+	ret = vm_machine_init(&vm, &cfg);
+	if (ret < 0) {
 		pr_err("failed to initialize virtual machine context\n");
-		goto error_cleanup_character_device;
+		goto err_cleanup_console;
 	}
 
-	return_code = vm_machine_run(&virtual_machine);
-	if (return_code < 0) {
+	ret = vm_machine_run(&vm);
+	if (ret < 0) {
 		pr_err("hypervisor runtime exited with fatal error\n");
-		goto error_destroy_machine;
+		goto err_destroy_vm;
 	}
 
-	vm_machine_destroy(&virtual_machine);
-	vm_character_device_stdio_destroy(
-		machine_configuration.primary_console_backend);
+	vm_machine_destroy(&vm);
+	vm_chardev_stdio_destroy(cfg.console);
 	pr_info("hypervisor engine shutdown gracefully\n");
 
 	vm_log_destroy();
 	return EXIT_SUCCESS;
 
-error_destroy_machine:
-	vm_machine_destroy(&virtual_machine);
-error_cleanup_character_device:
-	vm_character_device_stdio_destroy(
-		machine_configuration.primary_console_backend);
+err_destroy_vm:
+	vm_machine_destroy(&vm);
+err_cleanup_console:
+	vm_chardev_stdio_destroy(cfg.console);
 	vm_log_destroy();
 	return EXIT_FAILURE;
 }

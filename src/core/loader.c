@@ -11,57 +11,55 @@
 #define pr_fmt(fmt) "loader: " fmt
 
 /**
- * vm_loader_load_raw_image - load a flat binary file into guest memory
- * @memory_space: the memory space to map the image into
- * @file_path: host filesystem path to the binary image
- * @guest_physical_address: guest physical address where the image should be loaded
+ * vm_loader_load_raw - load a flat binary file into guest memory.
+ * @space: the memory space to map the image into.
+ * @path: host filesystem path to the binary image.
+ * @gpa: guest physical address where the image should be loaded.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_loader_load_raw_image(struct vm_memory_space *memory_space,
-			     const char *file_path,
-			     uint64_t guest_physical_address)
+int vm_loader_load_raw(struct vm_mem_space *space, const char *path,
+		       uint64_t gpa)
 {
-	FILE *image_file;
-	long total_file_size;
-	size_t bytes_read;
-	void *host_virtual_address;
+	FILE *fp;
+	long size;
+	size_t read_len;
+	void *hva;
 
-	if (WARN_ON(!memory_space || !file_path))
+	if (WARN_ON(!space || !path))
 		return -EINVAL;
 
-	image_file = fopen(file_path, "rb");
-	if (!image_file) {
-		pr_err("failed to open image file: %s (errno: %d)\n", file_path,
+	fp = fopen(path, "rb");
+	if (!fp) {
+		pr_err("failed to open image file: %s (errno: %d)\n", path,
 		       errno);
 		return -ENOENT;
 	}
 
-	if (fseek(image_file, 0, SEEK_END) < 0) {
-		fclose(image_file);
+	if (fseek(fp, 0, SEEK_END) < 0) {
+		fclose(fp);
 		return -EIO;
 	}
 
-	total_file_size = ftell(image_file);
-	if (total_file_size <= 0) {
-		pr_err("invalid or empty image file: %s\n", file_path);
-		fclose(image_file);
+	size = ftell(fp);
+	if (size <= 0) {
+		pr_err("invalid or empty image file: %s\n", path);
+		fclose(fp);
 		return -EINVAL;
 	}
 
-	rewind(image_file);
+	rewind(fp);
 
 	/*
 	 * Translate the target guest physical address to the host virtual address.
 	 * This resolves exactly where in our host process memory we need to
 	 * write the file payload so the virtual processor can access it.
 	 */
-	host_virtual_address = vm_memory_guest_to_host_address(
-		memory_space, guest_physical_address);
-	if (IS_ERR_OR_NULL(host_virtual_address)) {
-		pr_err("failed to translate address 0x%lx for image loading\n",
-		       guest_physical_address);
-		fclose(image_file);
+	hva = vm_mem_gpa_to_hva(space, gpa);
+	if (IS_ERR_OR_NULL(hva)) {
+		pr_err("failed to translate gpa 0x%lx for image loading\n",
+		       gpa);
+		fclose(fp);
 		return -EFAULT;
 	}
 
@@ -69,18 +67,17 @@ int vm_loader_load_raw_image(struct vm_memory_space *memory_space,
 	 * Stream the file directly from the host filesystem into the
 	 * virtual machine's physical memory backend.
 	 */
-	bytes_read = fread(host_virtual_address, 1, (size_t)total_file_size,
-			   image_file);
-	if (bytes_read != (size_t)total_file_size) {
+	read_len = fread(hva, 1, (size_t)size, fp);
+	if (read_len != (size_t)size) {
 		pr_err("short read while loading image: expected %ld, got %zu\n",
-		       total_file_size, bytes_read);
-		fclose(image_file);
+		       size, read_len);
+		fclose(fp);
 		return -EIO;
 	}
 
-	pr_info("successfully loaded %zu bytes from '%s' to address 0x%08lx\n",
-		bytes_read, file_path, guest_physical_address);
+	pr_info("successfully loaded %zu bytes from '%s' to gpa 0x%08lx\n",
+		read_len, path, gpa);
 
-	fclose(image_file);
+	fclose(fp);
 	return 0;
 }

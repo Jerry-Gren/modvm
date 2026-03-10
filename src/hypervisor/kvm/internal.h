@@ -3,38 +3,34 @@
 #define MODVM_KVM_INTERNAL_H
 
 #include <linux/kvm.h>
-
-#include <modvm/core/virtual_cpu.h>
+#include <modvm/core/vcpu.h>
 
 /**
- * struct vm_kvm_state - KVM specific virtual machine acceleration state
- * @kvm_file_descriptor: global handle to the hypervisor character device
- * @virtual_machine_file_descriptor: handle to this specific virtual machine
- * @memory_slot_index: counter for allocating sequential hardware memory slots
+ * struct kvm_state - KVM specific virtual machine acceleration state.
+ * @kvm_fd: global handle to the hypervisor character device (/dev/kvm).
+ * @vm_fd: handle to this specific virtual machine instance.
+ * @mem_slot_idx: counter for allocating sequential hardware memory slots.
  */
-struct vm_kvm_state {
-	int kvm_file_descriptor;
-	int virtual_machine_file_descriptor;
-	int memory_slot_index;
+struct kvm_state {
+	int kvm_fd;
+	int vm_fd;
+	int mem_slot_idx;
 };
 
 /**
- * struct vm_kvm_virtual_cpu_state - KVM specific virtual processor state
- * @virtual_cpu_file_descriptor: handle to this specific virtual processor
- * @kvm_run_mapping_size_bytes: size of the memory-mapped hypervisor run structure
- * @kvm_run_structure: shared memory region for hypervisor communication
+ * struct kvm_vcpu_state - KVM specific virtual processor state.
+ * @vcpu_fd: handle to this specific virtual processor.
+ * @run_size: size of the memory-mapped hypervisor run structure.
+ * @run: shared memory region for hypervisor communication.
  */
-struct vm_kvm_virtual_cpu_state {
-	int virtual_cpu_file_descriptor;
-	int kvm_run_mapping_size_bytes;
-	struct kvm_run *kvm_run_structure;
+struct kvm_vcpu_state {
+	int vcpu_fd;
+	int run_size;
+	struct kvm_run *run;
 };
 
-/*
- * Architecture-specific KVM backend hooks.
- * These must be implemented by each supported target architecture.
- */
-int kvm_arch_vcpu_set_pc(struct vm_virtual_cpu *cpu, uint64_t pc);
-int kvm_arch_vcpu_handle_exit(struct vm_virtual_cpu *cpu, struct kvm_run *run);
+int kvm_arch_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc);
+
+int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run);
 
 #endif /* MODVM_KVM_INTERNAL_H */

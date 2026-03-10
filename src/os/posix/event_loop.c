@@ -16,7 +16,7 @@
 
 struct event_record {
 	int fd;
-	vm_event_callback_t cb;
+	vm_event_cb_t cb;
 	void *data;
 };
 
@@ -45,10 +45,9 @@ static void wakeup_pipe_handler(int fd, uint32_t revents, void *data)
  * vm_event_loop_init - initialize the global asynchronous event dispatcher.
  *
  * Establishes the self-pipe trick. This pipe allows other threads to safely
- * interrupt the blocking poll() system call when system state changes
- * (e.g., during a shutdown request).
+ * interrupt the blocking poll() system call when system state changes.
  *
- * return: 0 on success, or a negative error code on failure.
+ * return: 0 on success, or a negative error code.
  */
 int vm_event_loop_init(void)
 {
@@ -58,7 +57,7 @@ int vm_event_loop_init(void)
 		return 0;
 
 	if (pipe(wakeup_pipe) < 0) {
-		pr_err("failed to create event loop wakeup pipe: %d\n", errno);
+		pr_err("failed to create wakeup pipe: %d\n", errno);
 		return -errno;
 	}
 
@@ -68,12 +67,12 @@ int vm_event_loop_init(void)
 	flags = fcntl(wakeup_pipe[1], F_GETFL, 0);
 	fcntl(wakeup_pipe[1], F_SETFL, flags | O_NONBLOCK);
 
-	return vm_event_loop_add_file_descriptor(wakeup_pipe[0], VM_EVENT_READ,
-						 wakeup_pipe_handler, NULL);
+	return vm_event_loop_add_fd(wakeup_pipe[0], VM_EVENT_READ,
+				    wakeup_pipe_handler, NULL);
 }
 
 /**
- * vm_event_loop_add_file_descriptor - register a host descriptor for monitoring.
+ * vm_event_loop_add_fd - register a host descriptor for monitoring.
  * @fd: the POSIX file descriptor to monitor.
  * @events_mask: bitmask of events (READ, WRITE, ERROR) to wait for.
  * @cb: the function to execute when the condition is met.
@@ -81,21 +80,21 @@ int vm_event_loop_init(void)
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_event_loop_add_file_descriptor(int fd, uint32_t events_mask,
-				      vm_event_callback_t cb, void *data)
+int vm_event_loop_add_fd(int fd, uint32_t events_mask, vm_event_cb_t cb,
+			 void *data)
 {
-	short poll_events = 0;
+	short poll_ev = 0;
 
 	if (WARN_ON(nr_events >= MAX_POLL_EVENTS))
 		return -ENOSPC;
 
 	if (events_mask & VM_EVENT_READ)
-		poll_events |= POLLIN;
+		poll_ev |= POLLIN;
 	if (events_mask & VM_EVENT_WRITE)
-		poll_events |= POLLOUT;
+		poll_ev |= POLLOUT;
 
 	poll_fds[nr_events].fd = fd;
-	poll_fds[nr_events].events = poll_events;
+	poll_fds[nr_events].events = poll_ev;
 	poll_fds[nr_events].revents = 0;
 
 	events[nr_events].fd = fd;
@@ -109,10 +108,10 @@ int vm_event_loop_add_file_descriptor(int fd, uint32_t events_mask,
 }
 
 /**
- * vm_event_loop_remove_file_descriptor - stop monitoring a host descriptor.
+ * vm_event_loop_rm_fd - stop monitoring a host descriptor.
  * @fd: the descriptor to remove from the watch list.
  */
-void vm_event_loop_remove_file_descriptor(int fd)
+void vm_event_loop_rm_fd(int fd)
 {
 	int i, j;
 
@@ -132,9 +131,8 @@ void vm_event_loop_remove_file_descriptor(int fd)
 /**
  * vm_event_loop_run - start the blocking dispatch loop.
  *
- * Takes over the calling thread (usually the primary thread) and blocks
- * indefinitely, routing I/O events to their respective callbacks. Exits
- * only when vm_event_loop_stop() is called.
+ * Takes over the calling thread and blocks indefinitely, routing I/O 
+ * events to their respective callbacks. Exits only on stop request.
  *
  * return: 0 on success, or a negative error code.
  */

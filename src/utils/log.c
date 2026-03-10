@@ -24,7 +24,7 @@ static const char *const level_prefixes[] = {
 	[VM_LOG_INFO] = "[INFO]   ",  [VM_LOG_DEBUG] = "[DEBUG]  ",
 };
 
-static struct os_mutex *global_logging_mutex = NULL;
+static struct os_mutex *log_lock = NULL;
 
 /**
  * vm_log_initialize - initialize the global logging subsystem
@@ -37,14 +37,10 @@ static struct os_mutex *global_logging_mutex = NULL;
  */
 int vm_log_initialize(void)
 {
-	if (!global_logging_mutex) {
-		global_logging_mutex = os_mutex_create();
-		if (!global_logging_mutex) {
-			/* * Fallback to unbuffered stderr if we cannot even allocate a lock 
-             * during early boot phase.
-             */
-			fprintf(stderr,
-				"[CRIT]   failed to initialize global logging mutex\n");
+	if (!log_lock) {
+		log_lock = os_mutex_create();
+		if (!log_lock) {
+			fprintf(stderr, "[CRIT]   failed to init log mutex\n");
 			return -ENOMEM;
 		}
 	}
@@ -59,9 +55,9 @@ int vm_log_initialize(void)
  */
 void vm_log_destroy(void)
 {
-	if (global_logging_mutex) {
-		os_mutex_destroy(global_logging_mutex);
-		global_logging_mutex = NULL;
+	if (log_lock) {
+		os_mutex_destroy(log_lock);
+		log_lock = NULL;
 	}
 }
 
@@ -77,42 +73,39 @@ void vm_log_destroy(void)
  *
  * return: the total number of characters processed.
  */
-int vm_log(enum vm_log_level level, const char *format_string, ...)
+int vm_log(enum vm_log_level level, const char *fmt, ...)
 {
-	va_list variadic_arguments;
-	int formatting_result;
-	int prefix_length = 0;
-	int payload_length;
-	int available_capacity;
-	int byte_index;
-	char text_buffer[LOG_LINE_MAX_LENGTH];
-	FILE *output_stream = (level <= VM_LOG_ERR) ? stderr : stdout;
+	va_list args;
+	int ret;
+	int prefix_len = 0;
+	int payload_len;
+	int avail;
+	int i;
+	char buf[LOG_LINE_MAX_LENGTH];
+	FILE *stream = (level <= VM_LOG_ERR) ? stderr : stdout;
 
 	if (level <= VM_LOG_DEBUG) {
-		prefix_length = snprintf(text_buffer, sizeof(text_buffer), "%s",
-					 level_prefixes[level]);
-		if (prefix_length < 0) {
-			prefix_length = 0;
-		} else if (prefix_length >= (int)sizeof(text_buffer)) {
-			prefix_length = sizeof(text_buffer) - 1;
-		}
+		prefix_len =
+			snprintf(buf, sizeof(buf), "%s", level_prefixes[level]);
+		if (prefix_len < 0)
+			prefix_len = 0;
+		else if (prefix_len >= (int)sizeof(buf))
+			prefix_len = sizeof(buf) - 1;
 	}
 
-	available_capacity = sizeof(text_buffer) - prefix_length;
-	if (available_capacity > 0) {
-		va_start(variadic_arguments, format_string);
-		formatting_result = vsnprintf(text_buffer + prefix_length,
-					      available_capacity, format_string,
-					      variadic_arguments);
-		va_end(variadic_arguments);
+	avail = sizeof(buf) - prefix_len;
+	if (avail > 0) {
+		va_start(args, fmt);
+		ret = vsnprintf(buf + prefix_len, avail, fmt, args);
+		va_end(args);
 
-		if (formatting_result < 0) {
+		if (ret < 0) {
 			/*
 			 * Encountered an encoding error during string formatting.
 			 * Discard the payload but retain the prefix.
 			 */
-			payload_length = 0;
-		} else if (formatting_result >= available_capacity) {
+			payload_len = 0;
+		} else if (ret >= avail) {
 			/*
 			 * The formatted output exceeded the buffer capacity.
 			 * The vsnprintf function returns the projected length, not the
@@ -120,12 +113,12 @@ int vm_log(enum vm_log_level level, const char *format_string, ...)
 			 * the buffer boundary minus the null terminator to prevent
 			 * a stack out-of-bounds read vulnerability.
 			 */
-			payload_length = available_capacity - 1;
+			payload_len = avail - 1;
 		} else {
-			payload_length = formatting_result;
+			payload_len = ret;
 		}
 	} else {
-		payload_length = 0;
+		payload_len = 0;
 	}
 
 	/*
@@ -133,27 +126,24 @@ int vm_log(enum vm_log_level level, const char *format_string, ...)
 	 * (e.g., extremely early boot errors), we still attempt to print, risking
 	 * log tearing rather than losing critical diagnostics.
 	 */
-	if (global_logging_mutex) {
-		os_mutex_lock(global_logging_mutex);
-	}
+	if (log_lock)
+		os_mutex_lock(log_lock);
 
 	/*
 	 * Output byte-by-byte to securely inject carriage returns, shielding
 	 * the host terminal against staircase rendering in raw mode.
 	 */
-	for (byte_index = 0; byte_index < prefix_length + payload_length;
-	     byte_index++) {
-		if (text_buffer[byte_index] == '\n')
-			fputc('\r', output_stream);
-		fputc(text_buffer[byte_index], output_stream);
+	for (i = 0; i < prefix_len + payload_len; i++) {
+		if (buf[i] == '\n')
+			fputc('\r', stream);
+		fputc(buf[i], stream);
 	}
-	fflush(output_stream);
+	fflush(stream);
 
-	if (global_logging_mutex) {
-		os_mutex_unlock(global_logging_mutex);
-	}
+	if (log_lock)
+		os_mutex_unlock(log_lock);
 
-	return prefix_length + payload_length;
+	return prefix_len + payload_len;
 }
 
 /**
@@ -163,51 +153,46 @@ int vm_log(enum vm_log_level level, const char *format_string, ...)
  * This routine is decorated with the noreturn attribute. It flushes a final
  * diagnostic message directly to standard error and halts the host process.
  */
-void vm_panic(const char *format_string, ...)
+void vm_panic(const char *fmt, ...)
 {
-	va_list variadic_arguments;
-	char text_buffer[LOG_LINE_MAX_LENGTH];
-	int prefix_length;
-	int available_capacity;
-	int byte_index;
+	va_list args;
+	char buf[LOG_LINE_MAX_LENGTH];
+	int prefix_len;
+	int avail;
+	int i;
 
-	prefix_length = snprintf(text_buffer, sizeof(text_buffer),
-				 "\r\n[MODVM PANIC] ");
-	if (prefix_length < 0) {
-		prefix_length = 0;
-	} else if (prefix_length >= (int)sizeof(text_buffer)) {
-		prefix_length = sizeof(text_buffer) - 1;
-	}
+	prefix_len = snprintf(buf, sizeof(buf), "\r\n[MODVM PANIC] ");
+	if (prefix_len < 0)
+		prefix_len = 0;
+	else if (prefix_len >= (int)sizeof(buf))
+		prefix_len = sizeof(buf) - 1;
 
-	available_capacity = sizeof(text_buffer) - prefix_length;
-	if (available_capacity > 0) {
-		va_start(variadic_arguments, format_string);
+	avail = sizeof(buf) - prefix_len;
+	if (avail > 0) {
+		va_start(args, fmt);
 		/*
 		 * vsnprintf inherently null-terminates the buffer
 		 * even upon truncation. Since we iterate based on the null byte below,
 		 * capturing the return value is unnecessary here.
 		 */
-		vsnprintf(text_buffer + prefix_length, available_capacity,
-			  format_string, variadic_arguments);
-		va_end(variadic_arguments);
+		vsnprintf(buf + prefix_len, avail, fmt, args);
+		va_end(args);
 	}
 
-	if (global_logging_mutex) {
-		os_mutex_lock(global_logging_mutex);
-	}
+	if (log_lock)
+		os_mutex_lock(log_lock);
 
-	for (byte_index = 0; text_buffer[byte_index] != '\0'; byte_index++) {
-		if (text_buffer[byte_index] == '\n')
+	for (i = 0; buf[i] != '\0'; i++) {
+		if (buf[i] == '\n')
 			fputc('\r', stderr);
-		fputc(text_buffer[byte_index], stderr);
+		fputc(buf[i], stderr);
 	}
 
 	fputs("\r\nSystem halted.\r\n", stderr);
 	fflush(stderr);
 
-	if (global_logging_mutex) {
-		os_mutex_unlock(global_logging_mutex);
-	}
+	if (log_lock)
+		os_mutex_unlock(log_lock);
 
 	abort();
 }

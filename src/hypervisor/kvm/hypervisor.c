@@ -16,40 +16,37 @@
 #include "internal.h"
 
 #undef pr_fmt
-#define pr_fmt(fmt) "kvm_hypervisor: " fmt
+#define pr_fmt(fmt) "kvm: " fmt
 
 /**
- * kvm_memory_map_callback - bridge between core memory allocator and KVM EPT
- * @space: the abstract memory space
- * @region: the specific memory region to map
- * @context_data: pointer to the KVM state structure
+ * kvm_mem_map_cb - bridge between core memory allocator and KVM EPT/NPT.
+ * @space: the abstract memory space.
+ * @reg: the specific memory region to map.
+ * @data: pointer to the KVM state structure.
  *
- * This callback is invoked whenever the core adds a new memory region.
- * It issues the KVM_SET_USER_MEMORY_REGION ioctl to bind the host virtual
- * address to the guest physical address in the hardware page tables.
+ * Invoked whenever the core adds a new memory region. Issues the 
+ * KVM_SET_USER_MEMORY_REGION ioctl to bind HVA to GPA in hardware.
  *
- * return: 0 on success, or a negative error code on ioctl failure.
+ * return: 0 on success, or a negative error code.
  */
-static int kvm_memory_map_callback(struct vm_memory_space *space,
-				   struct vm_memory_region *region,
-				   void *context_data)
+static int kvm_mem_map_cb(struct vm_mem_space *space, struct vm_mem_region *reg,
+			  void *data)
 {
-	struct vm_kvm_state *kvm_state = context_data;
-	struct kvm_userspace_memory_region hardware_region = {
-		.slot = kvm_state->memory_slot_index++,
-		.guest_phys_addr = region->guest_physical_address,
-		.memory_size = region->size_bytes,
-		.userspace_addr = (uint64_t)region->host_virtual_address,
+	struct kvm_state *state = data;
+	struct kvm_userspace_memory_region hw_reg = {
+		.slot = state->mem_slot_idx++,
+		.guest_phys_addr = reg->gpa,
+		.memory_size = reg->size,
+		.userspace_addr = (uint64_t)reg->hva,
 		.flags = 0,
 	};
 
 	(void)space;
 
-	if (region->access_flags & VM_MEMORY_FLAG_READONLY)
-		hardware_region.flags |= KVM_MEM_READONLY;
+	if (reg->flags & VM_MEM_FLAG_READONLY)
+		hw_reg.flags |= KVM_MEM_READONLY;
 
-	if (ioctl(kvm_state->virtual_machine_file_descriptor,
-		  KVM_SET_USER_MEMORY_REGION, &hardware_region) < 0) {
+	if (ioctl(state->vm_fd, KVM_SET_USER_MEMORY_REGION, &hw_reg) < 0) {
 		pr_err("failed to set hardware memory region: %d\n", errno);
 		return -errno;
 	}
@@ -58,107 +55,100 @@ static int kvm_memory_map_callback(struct vm_memory_space *space,
 }
 
 /**
- * vm_hypervisor_create - initialize the KVM acceleration backend
- * @hypervisor: the core hypervisor context to populate
+ * vm_hypervisor_create - initialize the KVM acceleration backend.
+ * @hv: the core hypervisor context to populate.
  *
- * Opens the /dev/kvm character device, validates the API version, and
- * creates the virtual machine container descriptor.
+ * Opens /dev/kvm, validates API version, and creates the VM descriptor.
  *
- * return: 0 on success, or a negative error code on failure.
+ * return: 0 on success, or a negative error code.
  */
-int vm_hypervisor_create(struct vm_hypervisor *hypervisor)
+int vm_hypervisor_create(struct vm_hypervisor *hv)
 {
-	struct vm_kvm_state *kvm_state;
-	int return_code;
+	struct kvm_state *state;
+	int ret;
 
-	if (WARN_ON(!hypervisor))
+	if (WARN_ON(!hv))
 		return -EINVAL;
 
-	kvm_state = calloc(1, sizeof(*kvm_state));
-	if (!kvm_state)
+	state = calloc(1, sizeof(*state));
+	if (!state)
 		return -ENOMEM;
 
-	kvm_state->kvm_file_descriptor = open("/dev/kvm", O_RDWR | O_CLOEXEC);
-	if (kvm_state->kvm_file_descriptor < 0) {
+	state->kvm_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
+	if (state->kvm_fd < 0) {
 		pr_err("failed to open hypervisor device\n");
-		return_code = -errno;
-		goto error_free_kvm_state;
+		ret = -errno;
+		goto err_free_state;
 	}
 
-	return_code =
-		ioctl(kvm_state->kvm_file_descriptor, KVM_GET_API_VERSION, 0);
-	if (return_code != KVM_API_VERSION) {
-		pr_err("unsupported hypervisor api version: %d\n", return_code);
-		return_code = -ENOTSUP;
-		goto error_close_kvm_descriptor;
+	ret = ioctl(state->kvm_fd, KVM_GET_API_VERSION, 0);
+	if (ret != KVM_API_VERSION) {
+		pr_err("unsupported hypervisor api version: %d\n", ret);
+		ret = -ENOTSUP;
+		goto err_close_kvm;
 	}
 
-	kvm_state->virtual_machine_file_descriptor =
-		ioctl(kvm_state->kvm_file_descriptor, KVM_CREATE_VM, 0);
-	if (kvm_state->virtual_machine_file_descriptor < 0) {
+	state->vm_fd = ioctl(state->kvm_fd, KVM_CREATE_VM, 0);
+	if (state->vm_fd < 0) {
 		pr_err("failed to instantiate virtual machine container\n");
-		return_code = -errno;
-		goto error_close_kvm_descriptor;
+		ret = -errno;
+		goto err_close_kvm;
 	}
 
-	kvm_state->memory_slot_index = 0;
-	hypervisor->hypervisor_private_data = kvm_state;
+	state->mem_slot_idx = 0;
+	hv->priv = state;
 
-	return_code = vm_memory_space_init(&hypervisor->memory_space,
-					   kvm_memory_map_callback, kvm_state);
-	if (return_code < 0) {
+	ret = vm_mem_space_init(&hv->mem_space, kvm_mem_map_cb, state);
+	if (ret < 0) {
 		pr_err("failed to initialize physical memory tracking\n");
-		goto error_close_virtual_machine_descriptor;
+		goto err_close_vm;
 	}
 
-	atomic_init(&hypervisor->is_running, false);
+	atomic_init(&hv->is_running, false);
 
-	hypervisor->startup_synchronization_lock = os_mutex_create();
-	if (!hypervisor->startup_synchronization_lock) {
+	hv->init_mutex = os_mutex_create();
+	if (!hv->init_mutex) {
 		pr_err("failed to allocate startup synchronization lock\n");
-		return_code = -ENOMEM;
-		vm_memory_space_destroy(&hypervisor->memory_space);
-		goto error_close_virtual_machine_descriptor;
+		ret = -ENOMEM;
+		vm_mem_space_destroy(&hv->mem_space);
+		goto err_close_vm;
 	}
 
 	pr_info("hypervisor container established successfully\n");
 	return 0;
 
-error_close_virtual_machine_descriptor:
-	close(kvm_state->virtual_machine_file_descriptor);
-error_close_kvm_descriptor:
-	close(kvm_state->kvm_file_descriptor);
-error_free_kvm_state:
-	free(kvm_state);
-	return return_code;
+err_close_vm:
+	close(state->vm_fd);
+err_close_kvm:
+	close(state->kvm_fd);
+err_free_state:
+	free(state);
+	return ret;
 }
 
 /**
- * vm_hypervisor_setup_interrupt_controller - synthesize architectural interrupt chips
- * @hypervisor: the initialized hypervisor context
+ * vm_hypervisor_setup_irqchip - synthesize architectural interrupt chips.
+ * @hv: the initialized hypervisor context.
  *
- * Instantiates the virtual Programmable Interrupt Controller (PIC),
- * IOAPIC, and local APICs required for legacy x86 interrupt routing.
+ * return: 0 on success, or a negative error code.
  */
-int vm_hypervisor_setup_interrupt_controller(struct vm_hypervisor *hypervisor)
+int vm_hypervisor_setup_irqchip(struct vm_hypervisor *hv)
 {
-	struct kvm_pit_config pit_config = { .flags = 0 };
-	struct vm_kvm_state *kvm_state;
+	struct kvm_pit_config pit_conf = { .flags = 0 };
+	struct kvm_state *state;
 
-	if (WARN_ON(!hypervisor || !hypervisor->hypervisor_private_data))
+	if (WARN_ON(!hv || !hv->priv))
 		return -EINVAL;
 
-	kvm_state = hypervisor->hypervisor_private_data;
+	state = hv->priv;
 
-	if (ioctl(kvm_state->virtual_machine_file_descriptor,
-		  KVM_CREATE_IRQCHIP, 0) < 0) {
-		pr_err("failed to synthesize architectural interrupt controller: %d\n",
+	if (ioctl(state->vm_fd, KVM_CREATE_IRQCHIP, 0) < 0) {
+		pr_err("failed to synthesize architectural irqchip: %d\n",
 		       errno);
 		return -errno;
 	}
 
-	if (ioctl(kvm_state->virtual_machine_file_descriptor, KVM_CREATE_PIT2,
-		  &pit_config) < 0) {
+	if (ioctl(state->vm_fd, KVM_CREATE_PIT2, &pit_conf) < 0) {
 		pr_err("failed to synthesize programmable interval timer: %d\n",
 		       errno);
 		return -errno;
@@ -169,29 +159,28 @@ int vm_hypervisor_setup_interrupt_controller(struct vm_hypervisor *hypervisor)
 }
 
 /**
- * vm_hypervisor_set_interrupt_line - inject a hardware interrupt signal
- * @hypervisor: the hypervisor context
- * @line_number: the Global System Interrupt (GSI) number
- * @level: logical voltage level (1 for high, 0 for low)
+ * vm_hypervisor_set_irq - inject a hardware interrupt signal.
+ * @hv: the hypervisor context.
+ * @irq: the Global System Interrupt (GSI) number.
+ * @level: logical voltage level (1 for high, 0 for low).
+ *
+ * return: 0 on success, or a negative error code.
  */
-int vm_hypervisor_set_interrupt_line(struct vm_hypervisor *hypervisor,
-				     uint32_t line_number, int level)
+int vm_hypervisor_set_irq(struct vm_hypervisor *hv, uint32_t irq, int level)
 {
 	struct kvm_irq_level irq_level;
-	struct vm_kvm_state *kvm_state;
+	struct kvm_state *state;
 
-	if (WARN_ON(!hypervisor || !hypervisor->hypervisor_private_data))
+	if (WARN_ON(!hv || !hv->priv))
 		return -EINVAL;
 
-	kvm_state = hypervisor->hypervisor_private_data;
+	state = hv->priv;
 
-	irq_level.irq = line_number;
+	irq_level.irq = irq;
 	irq_level.level = level;
 
-	if (ioctl(kvm_state->virtual_machine_file_descriptor, KVM_IRQ_LINE,
-		  &irq_level) < 0) {
-		pr_err("failed to assert hardware interrupt line %u\n",
-		       line_number);
+	if (ioctl(state->vm_fd, KVM_IRQ_LINE, &irq_level) < 0) {
+		pr_err("failed to assert hardware irq line %u\n", irq);
 		return -errno;
 	}
 
@@ -199,26 +188,26 @@ int vm_hypervisor_set_interrupt_line(struct vm_hypervisor *hypervisor,
 }
 
 /**
- * vm_hypervisor_destroy - release all host resources tied to the hypervisor
- * @hypervisor: the hypervisor context to tear down
+ * vm_hypervisor_destroy - release all host resources tied to KVM.
+ * @hv: the hypervisor context to tear down.
  */
-void vm_hypervisor_destroy(struct vm_hypervisor *hypervisor)
+void vm_hypervisor_destroy(struct vm_hypervisor *hv)
 {
-	struct vm_kvm_state *kvm_state;
+	struct kvm_state *state;
 
-	if (!hypervisor || !hypervisor->hypervisor_private_data)
+	if (!hv || !hv->priv)
 		return;
 
-	kvm_state = hypervisor->hypervisor_private_data;
+	state = hv->priv;
 
-	if (hypervisor->startup_synchronization_lock) {
-		os_mutex_destroy(hypervisor->startup_synchronization_lock);
-		hypervisor->startup_synchronization_lock = NULL;
+	if (hv->init_mutex) {
+		os_mutex_destroy(hv->init_mutex);
+		hv->init_mutex = NULL;
 	}
 
-	vm_memory_space_destroy(&hypervisor->memory_space);
-	close(kvm_state->virtual_machine_file_descriptor);
-	close(kvm_state->kvm_file_descriptor);
-	free(kvm_state);
-	hypervisor->hypervisor_private_data = NULL;
+	vm_mem_space_destroy(&hv->mem_space);
+	close(state->vm_fd);
+	close(state->kvm_fd);
+	free(state);
+	hv->priv = NULL;
 }
