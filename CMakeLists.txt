@@ -6,17 +6,17 @@ project(modvm
     LANGUAGES C
 )
 
-# 强制使用 C11 标准，禁用特定编译器的语法扩展 (如 GNU C 扩展)
+# Enforce C11 standard and disable compiler-specific extensions (e.g., GNU extensions)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-# 开启严格的编译器警告防御
+# Enable strict compiler warnings for quality assurance
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Werror -Wno-unused-value)
 endif()
 
-# 宿主机 CPU 架构探测与宏定义分发
+# Detect host CPU architecture and set corresponding preprocessor macros
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64|AMD64")
     set(MODVM_ARCH "x86_64")
     add_compile_definitions(ARCH_X86_64)
@@ -27,7 +27,7 @@ else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-# 宿主机 OS 探测与宏定义分发
+# Detect host Operating System and set corresponding preprocessor macros
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(MODVM_OS "linux")
     add_compile_definitions(OS_LINUX)
@@ -37,13 +37,13 @@ endif()
 
 message(STATUS "Configuring ModVM for ${MODVM_OS}-${MODVM_ARCH}")
 
-# 查找并配置标准线程库 (自动处理 -pthread 依赖)
+# Locate and configure the standard threading library (handles -pthread automatically)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-# 开启 CTest 测试支持
+# Enable CTest support for automated testing
 enable_testing()
 
-# 将构建任务分发给源码目录
+# Delegate build tasks to source and test subdirectories
 add_subdirectory(src)
 add_subdirectory(tests)
