@@ -16,6 +16,14 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Werror -Wno-unused-value)
 endif()
 
+option(ENABLE_ASAN "Enable AddressSanitizer for memory error detection" ON)
+
+if(ENABLE_ASAN)
+    message(STATUS "AddressSanitizer is ENABLED")
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
+
 # Detect host CPU architecture and set corresponding preprocessor macros
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64|AMD64")
     set(MODVM_ARCH "x86_64")

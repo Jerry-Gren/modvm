@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <string.h>
 
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/build_bug.h>
@@ -11,6 +12,7 @@
 #include <modvm/utils/list.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+#include <modvm/core/res_pool.h>
 
 #include <modvm/core/bus.h>
 #include <modvm/core/devres.h>
@@ -127,15 +129,18 @@ static const struct vm_device_ops mock_timer_ops = {
 
 static void test_bus_routing(void)
 {
+	struct vm_machine mock_machine;
 	struct mock_timer_ctx timer_ctx = { .ticks = 100, .irq_en = false };
 	struct vm_device timer_dev = {
 		.name = "mock_timer",
 		.ops = &mock_timer_ops,
 		.priv = &timer_ctx,
+		.machine = &mock_machine,
 	};
 	struct vm_device dummy_dev = {
 		.name = "dummy",
 		.ops = &mock_timer_ops,
+		.machine = &mock_machine,
 	};
 
 	int ret;
@@ -143,9 +148,14 @@ static void test_bus_routing(void)
 
 	pr_info("evaluating system bus topological routing\n");
 
+	/* Initialize mock machine bus topology */
+	memset(&mock_machine, 0, sizeof(mock_machine));
+	INIT_LIST_HEAD(&mock_machine.bus.pio_regions);
+	INIT_LIST_HEAD(&mock_machine.bus.mmio_regions);
+
 	/* Required initialization since we allocate devices on the stack for testing */
-	INIT_LIST_HEAD(&timer_dev.devres_head);
-	INIT_LIST_HEAD(&dummy_dev.devres_head);
+	vm_res_pool_init(&timer_dev.devres_pool, &timer_dev);
+	vm_res_pool_init(&dummy_dev.devres_pool, &dummy_dev);
 
 	ret = vm_bus_register_region(VM_BUS_PIO, 0x40, 4, &timer_dev);
 	if (WARN_ON(ret != 0))
@@ -159,28 +169,28 @@ static void test_bus_routing(void)
 	if (WARN_ON(ret != 0))
 		vm_panic("bus failed to isolate pio and mmio spaces\n");
 
-	vm_bus_dispatch_write(VM_BUS_PIO, 0x40, 500, 4);
+	vm_bus_dispatch_write(&mock_machine, VM_BUS_PIO, 0x40, 500, 4);
 	if (WARN_ON(timer_ctx.ticks != 500))
 		vm_panic("write routing failed to mutate state\n");
 
-	val = vm_bus_dispatch_read(VM_BUS_PIO, 0x40, 4);
+	val = vm_bus_dispatch_read(&mock_machine, VM_BUS_PIO, 0x40, 4);
 	if (WARN_ON(val != 500))
 		vm_panic("read routing returned incorrect data: %lu\n", val);
 
 	if (WARN_ON(timer_ctx.ticks != 501))
 		vm_panic("hardware state machine failed to tick upon read\n");
 
-	val = vm_bus_dispatch_read(VM_BUS_PIO, 0x3f8, 1);
+	val = vm_bus_dispatch_read(&mock_machine, VM_BUS_PIO, 0x3f8, 1);
 	if (WARN_ON(val != ~0ULL))
 		vm_panic("unmapped port returned %lx instead of high state\n",
 			 val);
 
 	/*
 	 * Trigger the devres teardown sequence explicitly to free the 
-         * bus region metadata allocated during vm_bus_register_region. 
-         */
-	vm_devres_release_all(&timer_dev);
-	vm_devres_release_all(&dummy_dev);
+	 * bus region metadata allocated during vm_bus_register_region. 
+	 */
+	vm_res_release_all(&timer_dev.devres_pool);
+	vm_res_release_all(&dummy_dev.devres_pool);
 
 	pr_info("bus routing and topology isolation passed\n");
 }

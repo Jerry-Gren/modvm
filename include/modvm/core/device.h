@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <modvm/core/machine.h>
 #include <modvm/utils/list.h>
+#include <modvm/core/res_pool.h>
 
 struct vm_device;
 struct vm_device_class;
@@ -38,7 +39,7 @@ struct vm_device_ops {
  */
 struct vm_device {
 	struct list_head node;
-	struct list_head devres_head;
+	struct vm_res_pool devres_pool;
 
 	struct vm_machine *machine;
 	const struct vm_device_class *cls;

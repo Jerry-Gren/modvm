@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <modvm/core/machine.h>
+
 #define VM_EVENT_READ (1U << 0)
 #define VM_EVENT_WRITE (1U << 1)
 #define VM_EVENT_ERROR (1U << 2)
@@ -17,14 +19,11 @@
  */
 typedef void (*vm_event_cb_t)(int fd, uint32_t events, void *data);
 
-int vm_event_loop_init(void);
-
-int vm_event_loop_add_fd(int fd, uint32_t events, vm_event_cb_t cb, void *data);
-
-void vm_event_loop_rm_fd(int fd);
-
-int vm_event_loop_run(void);
-
-void vm_event_loop_stop(void);
+int vm_event_loop_init(struct vm_machine *machine);
+int vm_event_loop_add_fd(struct vm_machine *machine, int fd, uint32_t events,
+			 vm_event_cb_t cb, void *data);
+void vm_event_loop_rm_fd(struct vm_machine *machine, int fd);
+int vm_event_loop_run(struct vm_machine *machine);
+void vm_event_loop_stop(struct vm_machine *machine);
 
 #endif /* MODVM_CORE_EVENT_LOOP_H */

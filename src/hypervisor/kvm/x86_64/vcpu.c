@@ -5,6 +5,8 @@
 
 #include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
+#include <modvm/core/machine.h>
+#include <modvm/utils/container_of.h>
 #include <modvm/utils/log.h>
 
 #include "../internal.h"
@@ -60,6 +62,8 @@ int kvm_arch_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
  */
 int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run)
 {
+	struct vm_machine *machine =
+		container_of(vcpu->hv, struct vm_machine, hv);
 	uint16_t port;
 	uint8_t size;
 	uint32_t count, i;
@@ -88,11 +92,11 @@ int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run)
 					break;
 				}
 
-				vm_bus_dispatch_write(VM_BUS_PIO, port, val,
-						      size);
+				vm_bus_dispatch_write(machine, VM_BUS_PIO, port,
+						      val, size);
 			} else {
-				uint64_t val = vm_bus_dispatch_read(VM_BUS_PIO,
-								    port, size);
+				uint64_t val = vm_bus_dispatch_read(
+					machine, VM_BUS_PIO, port, size);
 
 				switch (size) {
 				case 1:

@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include <modvm/core/res_pool.h>
 #include <modvm/core/hypervisor.h>
 #include <modvm/core/vcpu.h>
 #include <modvm/os/thread.h>
@@ -11,6 +12,24 @@
 #include <modvm/utils/list.h>
 
 struct vm_machine;
+
+/**
+ * struct vm_bus - encapsulates the system's address space topologies.
+ * @pio_regions: list of mapped Port I/O regions.
+ * @mmio_regions: list of mapped Memory-Mapped I/O regions.
+ */
+struct vm_bus {
+	struct list_head pio_regions;
+	struct list_head mmio_regions;
+};
+
+/**
+ * struct vm_event_loop - machine-specific asynchronous dispatch loop.
+ * @priv: opaque pointer pointing to the OS-specific event structure.
+ */
+struct vm_event_loop {
+	void *priv;
+};
 
 /**
  * struct vm_machine_ops - runtime operations for an instantiated machine.
@@ -59,13 +78,18 @@ struct vm_machine_config {
 /**
  * struct vm_machine - the motherboard abstraction.
  * @config: immutable configuration for this session.
+ * @machm_pool: resource pool for machine-level automated teardown.
  * @hv: virtualization engine container.
  * @vcpus: array of virtual processor instances.
  * @vcpu_threads: array of host OS threads driving the processors.
+ * @devices: topological registry of all instantiated peripherals.
  */
 struct vm_machine {
 	struct vm_machine_config config;
+	struct vm_res_pool machm_pool;
 	struct vm_hypervisor hv;
+	struct vm_bus bus;
+	struct vm_event_loop event_loop;
 	struct vm_vcpu **vcpus;
 	struct os_thread **vcpu_threads;
 	struct list_head devices;
@@ -83,5 +107,19 @@ int vm_machine_run(struct vm_machine *machine);
 void vm_machine_request_shutdown(struct vm_machine *machine);
 
 void vm_machine_destroy(struct vm_machine *machine);
+
+void *vm_machm_zalloc(struct vm_machine *machine, size_t size);
+char *vm_machm_strdup(struct vm_machine *machine, const char *s);
+
+int __vm_machm_add_action(struct vm_machine *machine, void (*action)(void *),
+			  void *data);
+
+#define vm_machm_add_action(machine, action, data)                        \
+	({                                                                \
+		void (*__action_checker)(__typeof__(data)) = (action);    \
+		__vm_machm_add_action((machine),                          \
+				      (void (*)(void *))__action_checker, \
+				      (data));                            \
+	})
 
 #endif /* MODVM_CORE_MACHINE_H */

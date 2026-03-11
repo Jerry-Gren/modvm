@@ -89,7 +89,7 @@ int main(int argc, char **argv)
 	ret = vm_machine_init(&vm, &cfg);
 	if (ret < 0) {
 		pr_err("failed to initialize virtual machine context\n");
-		goto err_cleanup_console;
+		goto err_destroy_vm;
 	}
 
 	ret = vm_machine_run(&vm);
@@ -107,7 +107,6 @@ int main(int argc, char **argv)
 
 err_destroy_vm:
 	vm_machine_destroy(&vm);
-err_cleanup_console:
 	vm_chardev_stdio_destroy(cfg.console);
 	vm_log_destroy();
 	return EXIT_FAILURE;

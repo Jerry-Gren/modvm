@@ -10,8 +10,10 @@
 
 #include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
+#include <modvm/core/machine.h>
 #include <modvm/utils/log.h>
 #include <modvm/os/thread.h>
+#include <modvm/utils/container_of.h>
 
 #include "internal.h"
 
@@ -101,6 +103,10 @@ static void handle_mmio_exit(struct vm_vcpu *vcpu)
 	struct kvm_vcpu_state *state = vcpu->priv;
 	struct kvm_run *run = state->run;
 
+	/* Derive the machine context from the hypervisor pointer */
+	struct vm_machine *machine =
+		container_of(vcpu->hv, struct vm_machine, hv);
+
 	uint64_t gpa = run->mmio.phys_addr;
 	uint8_t size = run->mmio.len;
 	uint8_t *data = run->mmio.data;
@@ -108,9 +114,11 @@ static void handle_mmio_exit(struct vm_vcpu *vcpu)
 
 	if (run->mmio.is_write) {
 		memcpy(&val, data, size);
-		vm_bus_dispatch_write(VM_BUS_MMIO, gpa, val, size);
+		/* Inject machine context into the dispatch call */
+		vm_bus_dispatch_write(machine, VM_BUS_MMIO, gpa, val, size);
 	} else {
-		val = vm_bus_dispatch_read(VM_BUS_MMIO, gpa, size);
+		/* Inject machine context into the dispatch call */
+		val = vm_bus_dispatch_read(machine, VM_BUS_MMIO, gpa, size);
 		memcpy(data, &val, size);
 	}
 }

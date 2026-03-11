@@ -35,10 +35,10 @@ struct vm_bus_region {
 int vm_bus_register_region(enum vm_bus_type type, uint64_t base, uint64_t size,
 			   struct vm_device *dev);
 
-uint64_t vm_bus_dispatch_read(enum vm_bus_type type, uint64_t addr,
-			      uint8_t size);
+uint64_t vm_bus_dispatch_read(struct vm_machine *machine, enum vm_bus_type type,
+			      uint64_t addr, uint8_t size);
 
-void vm_bus_dispatch_write(enum vm_bus_type type, uint64_t addr, uint64_t val,
-			   uint8_t size);
+void vm_bus_dispatch_write(struct vm_machine *machine, enum vm_bus_type type,
+			   uint64_t addr, uint64_t val, uint8_t size);
 
 #endif /* MODVM_CORE_BUS_H */

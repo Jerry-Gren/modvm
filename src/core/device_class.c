@@ -62,7 +62,7 @@ struct vm_device *vm_device_alloc(struct vm_machine *machine, const char *name)
 	dev->name = cls->name;
 	dev->machine = machine;
 	INIT_LIST_HEAD(&dev->node);
-	INIT_LIST_HEAD(&dev->devres_head);
+	vm_res_pool_init(&dev->devres_pool, dev);
 
 	return dev;
 }

@@ -72,8 +72,22 @@ static void stdio_rx_cb(int fd, uint32_t events, void *data)
 		dev->rx_cb(dev->rx_data, rx_buf, ret);
 }
 
+static void stdio_set_rx_cb(struct vm_chardev *dev, struct vm_machine *machine,
+			    vm_chardev_rx_cb_t cb, void *data)
+{
+	(void)data;
+
+	if (cb) {
+		vm_event_loop_add_fd(machine, STDIN_FILENO, VM_EVENT_READ,
+				     stdio_rx_cb, dev);
+	} else {
+		vm_event_loop_rm_fd(machine, STDIN_FILENO);
+	}
+}
+
 static const struct vm_chardev_ops stdio_ops = {
 	.write = stdio_write,
+	.set_rx_cb = stdio_set_rx_cb,
 };
 
 /**
@@ -118,8 +132,6 @@ struct vm_chardev *vm_chardev_stdio_create(void)
 		tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 	}
 
-	vm_event_loop_add_fd(STDIN_FILENO, VM_EVENT_READ, stdio_rx_cb, dev);
-
 	return dev;
 }
 
@@ -139,8 +151,6 @@ void vm_chardev_stdio_destroy(struct vm_chardev *dev)
 	/* flush if buffer is not empty when exit */
 	if (ctx->tx_len > 0)
 		write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len);
-
-	vm_event_loop_rm_fd(STDIN_FILENO);
 
 	if (ctx->is_saved)
 		tcsetattr(STDIN_FILENO, TCSANOW, &ctx->orig_termios);

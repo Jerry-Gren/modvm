@@ -6,6 +6,7 @@
 #include <fcntl.h>
 
 #include <modvm/os/event_loop.h>
+#include <modvm/core/machine.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 
@@ -20,13 +21,13 @@ struct event_record {
 	void *data;
 };
 
-static struct pollfd poll_fds[MAX_POLL_EVENTS];
-static struct event_record events[MAX_POLL_EVENTS];
-static int nr_events;
-static bool is_running;
-
-/* File descriptors for the self-pipe trick used to break the poll loop */
-static int wakeup_pipe[2] = { -1, -1 };
+struct posix_event_loop {
+	struct pollfd poll_fds[MAX_POLL_EVENTS];
+	struct event_record events[MAX_POLL_EVENTS];
+	int nr_events;
+	bool is_running;
+	int wakeup_pipe[2];
+};
 
 static void wakeup_pipe_handler(int fd, uint32_t revents, void *data)
 {
@@ -41,38 +42,62 @@ static void wakeup_pipe_handler(int fd, uint32_t revents, void *data)
 	} while (ret > 0);
 }
 
+static void posix_event_loop_close(void *data)
+{
+	struct posix_event_loop *loop = data;
+
+	if (loop->wakeup_pipe[0] != -1)
+		close(loop->wakeup_pipe[0]);
+	if (loop->wakeup_pipe[1] != -1)
+		close(loop->wakeup_pipe[1]);
+}
+
 /**
  * vm_event_loop_init - initialize the global asynchronous event dispatcher.
+ * @machine: the machine instance
  *
  * Establishes the self-pipe trick. This pipe allows other threads to safely
  * interrupt the blocking poll() system call when system state changes.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_event_loop_init(void)
+int vm_event_loop_init(struct vm_machine *machine)
 {
+	struct posix_event_loop *loop;
 	int flags;
 
-	if (wakeup_pipe[0] != -1)
-		return 0;
+	if (WARN_ON(!machine))
+		return -EINVAL;
 
-	if (pipe(wakeup_pipe) < 0) {
+	loop = vm_machm_zalloc(machine, sizeof(*loop));
+	if (!loop)
+		return -ENOMEM;
+
+	loop->wakeup_pipe[0] = -1;
+	loop->wakeup_pipe[1] = -1;
+
+	if (pipe(loop->wakeup_pipe) < 0) {
 		pr_err("failed to create wakeup pipe: %d\n", errno);
 		return -errno;
 	}
 
-	flags = fcntl(wakeup_pipe[0], F_GETFL, 0);
-	fcntl(wakeup_pipe[0], F_SETFL, flags | O_NONBLOCK);
+	vm_machm_add_action(machine, posix_event_loop_close, loop);
 
-	flags = fcntl(wakeup_pipe[1], F_GETFL, 0);
-	fcntl(wakeup_pipe[1], F_SETFL, flags | O_NONBLOCK);
+	flags = fcntl(loop->wakeup_pipe[0], F_GETFL, 0);
+	fcntl(loop->wakeup_pipe[0], F_SETFL, flags | O_NONBLOCK);
 
-	return vm_event_loop_add_fd(wakeup_pipe[0], VM_EVENT_READ,
-				    wakeup_pipe_handler, NULL);
+	flags = fcntl(loop->wakeup_pipe[1], F_GETFL, 0);
+	fcntl(loop->wakeup_pipe[1], F_SETFL, flags | O_NONBLOCK);
+
+	machine->event_loop.priv = loop;
+
+	return vm_event_loop_add_fd(machine, loop->wakeup_pipe[0],
+				    VM_EVENT_READ, wakeup_pipe_handler, loop);
 }
 
 /**
  * vm_event_loop_add_fd - register a host descriptor for monitoring.
+ * @machine: the machine instance
  * @fd: the POSIX file descriptor to monitor.
  * @events_mask: bitmask of events (READ, WRITE, ERROR) to wait for.
  * @cb: the function to execute when the condition is met.
@@ -80,12 +105,13 @@ int vm_event_loop_init(void)
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_event_loop_add_fd(int fd, uint32_t events_mask, vm_event_cb_t cb,
-			 void *data)
+int vm_event_loop_add_fd(struct vm_machine *machine, int fd,
+			 uint32_t events_mask, vm_event_cb_t cb, void *data)
 {
+	struct posix_event_loop *loop = machine->event_loop.priv;
 	short poll_ev = 0;
 
-	if (WARN_ON(nr_events >= MAX_POLL_EVENTS))
+	if (WARN_ON(!loop || loop->nr_events >= MAX_POLL_EVENTS))
 		return -ENOSPC;
 
 	if (events_mask & VM_EVENT_READ)
@@ -93,15 +119,15 @@ int vm_event_loop_add_fd(int fd, uint32_t events_mask, vm_event_cb_t cb,
 	if (events_mask & VM_EVENT_WRITE)
 		poll_ev |= POLLOUT;
 
-	poll_fds[nr_events].fd = fd;
-	poll_fds[nr_events].events = poll_ev;
-	poll_fds[nr_events].revents = 0;
+	loop->poll_fds[loop->nr_events].fd = fd;
+	loop->poll_fds[loop->nr_events].events = poll_ev;
+	loop->poll_fds[loop->nr_events].revents = 0;
 
-	events[nr_events].fd = fd;
-	events[nr_events].cb = cb;
-	events[nr_events].data = data;
+	loop->events[loop->nr_events].fd = fd;
+	loop->events[loop->nr_events].cb = cb;
+	loop->events[loop->nr_events].data = data;
 
-	nr_events++;
+	loop->nr_events++;
 	pr_debug("monitoring fd %d\n", fd);
 
 	return 0;
@@ -109,19 +135,24 @@ int vm_event_loop_add_fd(int fd, uint32_t events_mask, vm_event_cb_t cb,
 
 /**
  * vm_event_loop_rm_fd - stop monitoring a host descriptor.
+ * @machine: the machine instance
  * @fd: the descriptor to remove from the watch list.
  */
-void vm_event_loop_rm_fd(int fd)
+void vm_event_loop_rm_fd(struct vm_machine *machine, int fd)
 {
+	struct posix_event_loop *loop = machine->event_loop.priv;
 	int i, j;
 
-	for (i = 0; i < nr_events; i++) {
-		if (poll_fds[i].fd == fd) {
-			for (j = i; j < nr_events - 1; j++) {
-				poll_fds[j] = poll_fds[j + 1];
-				events[j] = events[j + 1];
+	if (!loop)
+		return;
+
+	for (i = 0; i < loop->nr_events; i++) {
+		if (loop->poll_fds[i].fd == fd) {
+			for (j = i; j < loop->nr_events - 1; j++) {
+				loop->poll_fds[j] = loop->poll_fds[j + 1];
+				loop->events[j] = loop->events[j + 1];
 			}
-			nr_events--;
+			loop->nr_events--;
 			pr_debug("removed fd %d\n", fd);
 			return;
 		}
@@ -130,21 +161,26 @@ void vm_event_loop_rm_fd(int fd)
 
 /**
  * vm_event_loop_run - start the blocking dispatch loop.
+ * @machine: the machine instance
  *
  * Takes over the calling thread and blocks indefinitely, routing I/O 
  * events to their respective callbacks. Exits only on stop request.
  *
  * return: 0 on success, or a negative error code.
  */
-int vm_event_loop_run(void)
+int vm_event_loop_run(struct vm_machine *machine)
 {
+	struct posix_event_loop *loop = machine->event_loop.priv;
 	uint32_t revents;
 	int ret, i;
 
-	is_running = true;
+	if (!loop)
+		return -EINVAL;
 
-	while (is_running) {
-		ret = poll(poll_fds, nr_events, -1);
+	loop->is_running = true;
+
+	while (loop->is_running) {
+		ret = poll(loop->poll_fds, loop->nr_events, -1);
 		if (ret < 0) {
 			if (errno == EINTR)
 				continue;
@@ -152,23 +188,24 @@ int vm_event_loop_run(void)
 			return -errno;
 		}
 
-		for (i = 0; i < nr_events; i++) {
-			if (!poll_fds[i].revents)
+		for (i = 0; i < loop->nr_events; i++) {
+			if (!loop->poll_fds[i].revents)
 				continue;
 
 			revents = 0;
-			if (poll_fds[i].revents & (POLLIN | POLLHUP))
+			if (loop->poll_fds[i].revents & (POLLIN | POLLHUP))
 				revents |= VM_EVENT_READ;
-			if (poll_fds[i].revents & POLLOUT)
+			if (loop->poll_fds[i].revents & POLLOUT)
 				revents |= VM_EVENT_WRITE;
-			if (poll_fds[i].revents & POLLERR)
+			if (loop->poll_fds[i].revents & POLLERR)
 				revents |= VM_EVENT_ERROR;
 
-			if (events[i].cb)
-				events[i].cb(poll_fds[i].fd, revents,
-					     events[i].data);
+			if (loop->events[i].cb)
+				loop->events[i].cb(loop->poll_fds[i].fd,
+						   revents,
+						   loop->events[i].data);
 
-			poll_fds[i].revents = 0;
+			loop->poll_fds[i].revents = 0;
 		}
 	}
 
@@ -177,16 +214,22 @@ int vm_event_loop_run(void)
 
 /**
  * vm_event_loop_stop - terminate the dispatch loop.
+ * @machine: the machine instance
  *
  * Writes a dummy byte to the self-pipe, safely breaking the poll() call
  * in the main thread and allowing vm_event_loop_run() to return.
  */
-void vm_event_loop_stop(void)
+void vm_event_loop_stop(struct vm_machine *machine)
 {
-	is_running = false;
+	struct posix_event_loop *loop = machine->event_loop.priv;
 
-	if (wakeup_pipe[1] != -1) {
-		if (write(wakeup_pipe[1], "x", 1) < 0) {
+	if (!loop)
+		return;
+
+	loop->is_running = false;
+
+	if (loop->wakeup_pipe[1] != -1) {
+		if (write(loop->wakeup_pipe[1], "x", 1) < 0) {
 			/* Safely ignore EAGAIN if the pipe happens to be full */
 		}
 	}

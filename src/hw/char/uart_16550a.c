@@ -431,10 +431,11 @@ static const struct vm_device_ops uart_ops = {
 
 static void uart_clear_rx_cb(void *data)
 {
-	struct vm_chardev *console = data;
+	struct vm_device *dev = data;
+	struct uart_ctx *ctx = dev->priv;
 
-	if (console)
-		vm_chardev_set_rx_cb(console, NULL, NULL);
+	if (ctx->console)
+		vm_chardev_set_rx_cb(ctx->console, dev->machine, NULL, NULL);
 }
 
 /**
@@ -472,9 +473,9 @@ static int uart_instantiate(struct vm_device *dev, void *pdata)
 	ctx->console = plat->console;
 
 	/* bind the hardware reception pin to the backend data stream */
-	vm_chardev_set_rx_cb(ctx->console, uart_rx_cb, ctx);
+	vm_chardev_set_rx_cb(ctx->console, dev->machine, uart_rx_cb, ctx);
 
-	ret = vm_devm_add_action(dev, uart_clear_rx_cb, ctx->console);
+	ret = vm_devm_add_action(dev, uart_clear_rx_cb, dev);
 	if (ret < 0)
 		return ret;
 
