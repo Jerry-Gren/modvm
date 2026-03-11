@@ -5,11 +5,12 @@
 #include <errno.h>
 
 #include <modvm/core/bus.h>
+#include <modvm/core/devres.h>
 #include <modvm/hw/serial_reg.h>
 #include <modvm/hw/serial.h>
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/log.h>
-#include <modvm/utils/bug.h>
+#include <modvm/utils/err.h>
 #include <modvm/os/thread.h>
 
 #undef pr_fmt
@@ -17,7 +18,6 @@
 
 /**
  * struct uart_ctx - internal state machine for the 16550a uart
- * @dev: base virtual device structure for bus registration
  * @lock: mutex to serialize access from multiple executing processors
  * @irq: hardware interrupt line connection to the system board
  * @console: host character device handling the stream presentation
@@ -35,7 +35,6 @@
  * @thre_int_pending: internal flip-flop for edge-triggered thre interrupts
  */
 struct uart_ctx {
-	struct vm_device dev;
 	struct os_mutex *lock;
 	struct vm_irq *irq;
 	struct vm_chardev *console;
@@ -430,36 +429,54 @@ static const struct vm_device_ops uart_ops = {
 	.write = uart_bus_write,
 };
 
+static void uart_clear_rx_cb(void *data)
+{
+	struct vm_chardev *console = data;
+
+	if (console)
+		vm_chardev_set_rx_cb(console, NULL, NULL);
+}
+
 /**
  * uart_instantiate - allocate and register the serial peripheral
- * @machine: the container representing the host topology
+ * @dev: the abstract device object assigned by the core framework
  * @pdata: immutable routing configuration
  *
  * return: 0 upon successful initialization, or a negative error code.
  */
-static int uart_instantiate(struct vm_machine *machine, void *pdata)
+static int uart_instantiate(struct vm_device *dev, void *pdata)
 {
 	struct uart_ctx *ctx;
 	struct serial_pdata *plat = pdata;
 	int ret;
 
-	(void)machine;
-
-	/* allocate state on heap to persist beyond the init sequence */
-	ctx = calloc(1, sizeof(*ctx));
+	ctx = vm_devm_zalloc(dev, sizeof(*ctx));
 	if (!ctx)
 		return -ENOMEM;
 
+	dev->ops = &uart_ops;
+	dev->priv = ctx;
+
 	ctx->lock = os_mutex_create();
+	if (IS_ERR(ctx->lock))
+		return PTR_ERR(ctx->lock);
+
+	ret = vm_devm_add_action(dev, (void (*)(void *))os_mutex_destroy,
+				 ctx->lock);
+	if (ret < 0) {
+		os_mutex_destroy(ctx->lock);
+		return ret;
+	}
+
 	ctx->irq = plat->irq;
 	ctx->console = plat->console;
 
 	/* bind the hardware reception pin to the backend data stream */
 	vm_chardev_set_rx_cb(ctx->console, uart_rx_cb, ctx);
 
-	ctx->dev.name = "16550A";
-	ctx->dev.ops = &uart_ops;
-	ctx->dev.priv = ctx;
+	ret = vm_devm_add_action(dev, uart_clear_rx_cb, ctx->console);
+	if (ret < 0)
+		return ret;
 
 	/*
 	 * strict hardware reset states per table 3.
@@ -475,13 +492,9 @@ static int uart_instantiate(struct vm_machine *machine, void *pdata)
 	ctx->msr &= ~UART_MSR_ANY_DELTA;
 
 	/* Claim the 8 contiguous I/O ports on the motherboard bus */
-	ret = vm_bus_register_region(VM_BUS_PIO, plat->base, 8, &ctx->dev);
-	if (ret < 0) {
-		pr_err("failed to register pio region: %d\n", ret);
-		os_mutex_destroy(ctx->lock);
-		free(ctx);
+	ret = vm_bus_register_region(VM_BUS_PIO, plat->base, 8, dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	pr_info("initialized serial terminal at port 0x%03lx\n", plat->base);
 	return 0;

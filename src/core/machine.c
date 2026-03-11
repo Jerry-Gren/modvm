@@ -3,6 +3,8 @@
 #include <errno.h>
 
 #include <modvm/core/machine.h>
+#include <modvm/core/device.h>
+#include <modvm/core/devres.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
@@ -44,6 +46,8 @@ int vm_machine_init(struct vm_machine *machine,
 		return -EINVAL;
 
 	machine->config = *config;
+
+	INIT_LIST_HEAD(&machine->devices);
 
 	/* Bring up the hypervisor container to establish the execution boundary */
 	ret = vm_hypervisor_init(&machine->hv, machine->config.accel_name);
@@ -208,6 +212,7 @@ void vm_machine_request_shutdown(struct vm_machine *machine)
  */
 void vm_machine_destroy(struct vm_machine *machine)
 {
+	struct vm_device *dev, *n;
 	unsigned int i;
 
 	if (!machine)
@@ -231,6 +236,16 @@ void vm_machine_destroy(struct vm_machine *machine)
 		}
 		free(machine->vcpu_threads);
 		machine->vcpu_threads = NULL;
+	}
+
+	list_for_each_entry_safe(dev, n, &machine->devices, node)
+	{
+		list_del(&dev->node);
+
+		if (dev->ops && dev->ops->unrealize)
+			dev->ops->unrealize(dev);
+
+		vm_device_put(dev);
 	}
 
 	vm_hypervisor_destroy(&machine->hv);

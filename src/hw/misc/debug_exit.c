@@ -4,6 +4,7 @@
 
 #include <modvm/core/bus.h>
 #include <modvm/core/machine.h>
+#include <modvm/core/devres.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 
@@ -13,7 +14,6 @@
 #define pr_fmt(fmt) "debug_exit: " fmt
 
 struct debug_exit_ctx {
-	struct vm_device dev;
 	struct vm_machine *machine;
 };
 
@@ -33,29 +33,34 @@ static const struct vm_device_ops debug_exit_ops = {
 	.write = debug_exit_write,
 };
 
-static int debug_exit_instantiate(struct vm_machine *machine, void *pdata)
+/**
+ * debug_exit_instantiate - allocate and register the debug exit peripheral
+ * @dev: the abstract device object assigned by the core framework
+ * @pdata: immutable routing configuration (unused)
+ *
+ * return: 0 upon successful initialization, or a negative error code.
+ */
+static int debug_exit_instantiate(struct vm_device *dev, void *pdata)
 {
 	struct debug_exit_ctx *ctx;
 	int ret;
 
 	(void)pdata;
 
-	ctx = calloc(1, sizeof(*ctx));
+	ctx = vm_devm_zalloc(dev, sizeof(*ctx));
 	if (!ctx)
 		return -ENOMEM;
 
-	ctx->machine = machine;
+	/* dev->machine is already populated by vm_device_create */
+	ctx->machine = dev->machine;
 
-	ctx->dev.name = "debug-exit";
-	ctx->dev.ops = &debug_exit_ops;
-	ctx->dev.priv = ctx;
+	dev->name = "debug-exit";
+	dev->ops = &debug_exit_ops;
+	dev->priv = ctx;
 
-	ret = vm_bus_register_region(VM_BUS_PIO, DEBUG_EXIT_BASE_PORT, 1,
-				     &ctx->dev);
-	if (ret < 0) {
-		free(ctx);
+	ret = vm_bus_register_region(VM_BUS_PIO, DEBUG_EXIT_BASE_PORT, 1, dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	return 0;
 }

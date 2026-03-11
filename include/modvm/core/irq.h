@@ -2,6 +2,8 @@
 #ifndef MODVM_CORE_IRQ_H
 #define MODVM_CORE_IRQ_H
 
+#include <modvm/core/device.h>
+
 struct vm_irq;
 
 /**
@@ -11,10 +13,9 @@ struct vm_irq;
  */
 typedef void (*vm_irq_cb_t)(void *data, int level);
 
-struct vm_irq *vm_irq_alloc(vm_irq_cb_t cb, void *data);
+struct vm_irq *vm_devm_irq_alloc(struct vm_device *dev, vm_irq_cb_t cb,
+				 void *data);
 
 void vm_irq_set_level(struct vm_irq *irq, int level);
-
-void vm_irq_free(struct vm_irq *irq);
 
 #endif /* MODVM_CORE_IRQ_H */

@@ -3,6 +3,7 @@
 #include <errno.h>
 
 #include <modvm/core/bus.h>
+#include <modvm/core/devres.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/log.h>
 
@@ -19,6 +20,23 @@ static LIST_HEAD(pio_regions);
 static LIST_HEAD(mmio_regions);
 
 /**
+ * bus_region_release - automatically unregister a bus region upon device destruction.
+ * @dev: the peripheral device owning the region.
+ * @res: the resource payload containing the bus region.
+ *
+ * This callback is invoked by the devres framework. It safely detaches
+ * the region from the global bus topology before the memory is freed.
+ */
+static void bus_region_release(struct vm_device *dev, void *res)
+{
+	struct vm_bus_region *reg = res;
+
+	(void)dev;
+	list_del(&reg->node);
+	pr_debug("automatically unregistered region at 0x%lx\n", reg->base);
+}
+
+/**
  * vm_bus_register_region - map a device into the system address space.
  * @type: indicates whether this is PIO or MMIO.
  * @base: absolute starting address on the system bus.
@@ -27,6 +45,7 @@ static LIST_HEAD(mmio_regions);
  *
  * Scans the existing topology for overlapping regions to prevent
  * hardware resource collisions before registering the new mapping.
+ * The mapping is tied to the device's lifecycle via devres.
  *
  * return: 0 on success, or a negative error code.
  */
@@ -50,7 +69,7 @@ int vm_bus_register_region(enum vm_bus_type type, uint64_t base, uint64_t size,
 		}
 	}
 
-	reg = calloc(1, sizeof(*reg));
+	reg = vm_devres_alloc(bus_region_release, sizeof(*reg));
 	if (!reg)
 		return -ENOMEM;
 
@@ -60,6 +79,8 @@ int vm_bus_register_region(enum vm_bus_type type, uint64_t base, uint64_t size,
 	reg->type = type;
 
 	list_add_tail(&reg->node, list);
+
+	vm_devres_add(dev, reg);
 
 	pr_debug("registered '%s' to space %d at 0x%lx\n",
 		 dev->name ? dev->name : "unknown", type, base);

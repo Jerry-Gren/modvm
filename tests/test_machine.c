@@ -7,6 +7,7 @@
 
 #include <modvm/core/machine.h>
 #include <modvm/core/device.h>
+#include <modvm/core/devres.h>
 #include <modvm/core/memory.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
@@ -37,6 +38,8 @@ static void mock_irq_handler(void *data, int level)
 
 static int mock_machine_init(struct vm_machine *machine)
 {
+	struct vm_device *uart;
+	struct vm_device *exit_dev;
 	struct serial_pdata pdata;
 	struct mock_irq_route *route;
 	int ret;
@@ -47,31 +50,51 @@ static int mock_machine_init(struct vm_machine *machine)
 		return ret;
 	}
 
-	route = calloc(1, sizeof(*route));
-	if (!route)
+	/* 替换掉废弃的 vm_device_create，拥抱两段式构建 */
+	uart = vm_device_alloc(machine, "uart-16550a");
+	if (!uart)
 		return -ENOMEM;
+
+	route = vm_devm_zalloc(uart, sizeof(*route));
+	if (!route) {
+		ret = -ENOMEM;
+		goto err_uart;
+	}
 
 	route->hv = &machine->hv;
 	route->gsi = 4;
 
 	pdata.base = 0x3f8;
 	pdata.console = machine->config.console;
-	pdata.irq = vm_irq_alloc(mock_irq_handler, route);
-
-	ret = vm_device_create(machine, "uart-16550a", &pdata);
-	if (ret < 0) {
-		pr_err("failed to probe uart peripheral\n");
-		return ret;
+	pdata.irq = vm_devm_irq_alloc(uart, mock_irq_handler, route);
+	if (!pdata.irq) {
+		ret = -ENOMEM;
+		goto err_uart;
 	}
 
-	ret = vm_device_create(machine, "debug-exit", NULL);
+	ret = vm_device_add(uart, &pdata);
+	if (ret < 0) {
+		pr_err("failed to probe uart peripheral\n");
+		goto err_uart;
+	}
+
+	exit_dev = vm_device_alloc(machine, "debug-exit");
+	if (!exit_dev)
+		return -ENOMEM;
+
+	ret = vm_device_add(exit_dev, NULL);
 	if (ret < 0) {
 		pr_err("failed to probe debug exit device\n");
+		vm_device_put(exit_dev);
 		return ret;
 	}
 
 	pr_info("mock hardware topology injected successfully\n");
 	return 0;
+
+err_uart:
+	vm_device_put(uart);
+	return ret;
 }
 
 static int mock_machine_reset(struct vm_machine *machine)

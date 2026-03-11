@@ -8,6 +8,7 @@
 #include <modvm/core/vcpu.h>
 #include <modvm/os/thread.h>
 #include <modvm/core/chardev.h>
+#include <modvm/utils/list.h>
 
 struct vm_machine;
 
@@ -67,6 +68,7 @@ struct vm_machine {
 	struct vm_hypervisor hv;
 	struct vm_vcpu **vcpus;
 	struct os_thread **vcpu_threads;
+	struct list_head devices;
 };
 
 void vm_machine_class_register(const struct vm_machine_class *cls);

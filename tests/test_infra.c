@@ -13,6 +13,7 @@
 #include <modvm/utils/bug.h>
 
 #include <modvm/core/bus.h>
+#include <modvm/core/devres.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "test_infra: " fmt
@@ -142,6 +143,10 @@ static void test_bus_routing(void)
 
 	pr_info("evaluating system bus topological routing\n");
 
+	/* Required initialization since we allocate devices on the stack for testing */
+	INIT_LIST_HEAD(&timer_dev.devres_head);
+	INIT_LIST_HEAD(&dummy_dev.devres_head);
+
 	ret = vm_bus_register_region(VM_BUS_PIO, 0x40, 4, &timer_dev);
 	if (WARN_ON(ret != 0))
 		vm_panic("failed to register pio peripheral\n");
@@ -169,6 +174,13 @@ static void test_bus_routing(void)
 	if (WARN_ON(val != ~0ULL))
 		vm_panic("unmapped port returned %lx instead of high state\n",
 			 val);
+
+	/*
+	 * Trigger the devres teardown sequence explicitly to free the 
+         * bus region metadata allocated during vm_bus_register_region. 
+         */
+	vm_devres_release_all(&timer_dev);
+	vm_devres_release_all(&dummy_dev);
 
 	pr_info("bus routing and topology isolation passed\n");
 }

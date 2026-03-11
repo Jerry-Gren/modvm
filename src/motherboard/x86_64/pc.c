@@ -4,6 +4,7 @@
 
 #include <modvm/core/machine.h>
 #include <modvm/core/device.h>
+#include <modvm/core/devres.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/compiler.h>
 #include <modvm/core/loader.h>
@@ -34,40 +35,56 @@ static void pc_irq_handler(void *data, int level)
  */
 static int pc_board_init(struct vm_machine *machine)
 {
-	struct serial_pdata serial_pdata;
-	struct pc_irq_route *serial_route;
+	struct vm_device *uart;
+	struct vm_device *exit_dev;
+	struct serial_pdata uart_pdata;
+	struct pc_irq_route *uart_route;
 	int ret;
 
 	ret = vm_hypervisor_setup_irqchip(&machine->hv);
-	if (ret < 0) {
-		pr_err("failed to initialize architectural irqchip\n");
+	if (ret < 0)
 		return ret;
-	}
 
-	serial_route = calloc(1, sizeof(*serial_route));
-	if (!serial_route)
+	uart = vm_device_alloc(machine, "uart-16550a");
+	if (!uart)
 		return -ENOMEM;
 
-	serial_route->hv = &machine->hv;
-	serial_route->gsi = 4;
-
-	serial_pdata.base = 0x3f8;
-	serial_pdata.console = machine->config.console;
-	serial_pdata.irq = vm_irq_alloc(pc_irq_handler, serial_route);
-
-	ret = vm_device_create(machine, "uart-16550a", &serial_pdata);
-	if (ret < 0) {
-		pr_err("failed to instantiate primary serial console\n");
-		return ret;
+	uart_route = vm_devm_zalloc(uart, sizeof(*uart_route));
+	if (!uart_route) {
+		ret = -ENOMEM;
+		goto err_uart;
 	}
 
-	ret = vm_device_create(machine, "debug-exit", NULL);
+	uart_route->hv = &machine->hv;
+	uart_route->gsi = 4;
+
+	uart_pdata.base = 0x3f8;
+	uart_pdata.console = machine->config.console;
+	uart_pdata.irq = vm_devm_irq_alloc(uart, pc_irq_handler, uart_route);
+	if (!uart_pdata.irq) {
+		ret = -ENOMEM;
+		goto err_uart;
+	}
+
+	ret = vm_device_add(uart, &uart_pdata);
+	if (ret < 0)
+		goto err_uart;
+
+	exit_dev = vm_device_alloc(machine, "debug-exit");
+	if (!exit_dev)
+		return -ENOMEM;
+
+	ret = vm_device_add(exit_dev, NULL);
 	if (ret < 0) {
-		pr_err("failed to instantiate debug exit device\n");
+		vm_device_put(exit_dev);
 		return ret;
 	}
 
 	return 0;
+
+err_uart:
+	vm_device_put(uart);
+	return ret;
 }
 
 /**

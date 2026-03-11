@@ -4,8 +4,10 @@
 
 #include <stdint.h>
 #include <modvm/core/machine.h>
+#include <modvm/utils/list.h>
 
 struct vm_device;
+struct vm_device_class;
 
 /**
  * struct vm_device_ops - standardized callbacks for hardware emulation.
@@ -27,11 +29,19 @@ struct vm_device_ops {
 
 /**
  * struct vm_device - base class for all virtual peripherals.
+ * @node: linked list node to attach to the machine subsystem.
+ * @devres_head: anchor for all dynamically allocated device resources.
+ * @machine: the parent machine topology containing this device.
  * @name: human-readable identifier for debugging.
  * @ops: pointer to the device implementation methods.
  * @priv: opaque pointer for device-specific state.
  */
 struct vm_device {
+	struct list_head node;
+	struct list_head devres_head;
+
+	struct vm_machine *machine;
+	const struct vm_device_class *cls;
 	const char *name;
 	const struct vm_device_ops *ops;
 	void *priv;
@@ -40,18 +50,17 @@ struct vm_device {
 /**
  * struct vm_device_class - hardware implementation blueprint.
  * @name: unique string identifier for the device type.
- * @instantiate: factory callback to create the device onto a machine.
- *
- * Enables dependency injection by allowing board code to request
- * devices by name rather than static compile-time linkage.
+ * @instantiate: factory callback to wire up internal routing and allocate state.
  */
 struct vm_device_class {
 	const char *name;
-	int (*instantiate)(struct vm_machine *machine, void *pdata);
+	int (*instantiate)(struct vm_device *dev, void *pdata);
 };
 
 void vm_device_class_register(const struct vm_device_class *cls);
 
-int vm_device_create(struct vm_machine *machine, const char *name, void *pdata);
+struct vm_device *vm_device_alloc(struct vm_machine *machine, const char *name);
+int vm_device_add(struct vm_device *dev, void *pdata);
+void vm_device_put(struct vm_device *dev);
 
 #endif /* MODVM_CORE_DEVICE_H */

@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 
 #include <modvm/core/device.h>
+#include <modvm/core/devres.h>
 #include <modvm/utils/compiler.h>
-#include <modvm/utils/err.h>
 #include <modvm/utils/log.h>
 
 #undef pr_fmt
@@ -26,29 +27,79 @@ void vm_device_class_register(const struct vm_device_class *cls)
 }
 
 /**
- * vm_device_create - instantiate a hardware peripheral from its blueprint.
- * @machine: the target machine topological container.
- * @name: the unique string identifier of the requested device class.
- * @pdata: hardwired topological routing data.
+ * vm_device_alloc - allocate a lifeless device shell.
+ * @machine: the parent machine topology.
+ * @name: the identifier of the requested device class.
  *
- * return: 0 upon successful instantiation, or a negative error code.
+ * return: a pointer to the empty device shell, or NULL on failure.
  */
-int vm_device_create(struct vm_machine *machine, const char *name, void *pdata)
+struct vm_device *vm_device_alloc(struct vm_machine *machine, const char *name)
 {
+	struct vm_device *dev;
+	const struct vm_device_class *cls = NULL;
 	int i;
 
 	if (!machine || !name)
-		return -EINVAL;
+		return NULL;
 
 	for (i = 0; i < nr_device_classes; i++) {
 		if (strcmp(device_classes[i]->name, name) == 0) {
-			if (device_classes[i]->instantiate)
-				return device_classes[i]->instantiate(machine,
-								      pdata);
-			return -ENOTSUP;
+			cls = device_classes[i];
+			break;
 		}
 	}
 
-	pr_err("device class '%s' not found in registry\n", name);
-	return -ENOENT;
+	if (!cls) {
+		pr_err("device class '%s' not found\n", name);
+		return NULL;
+	}
+
+	dev = calloc(1, sizeof(*dev));
+	if (!dev)
+		return NULL;
+
+	dev->cls = cls;
+	dev->name = cls->name;
+	dev->machine = machine;
+	INIT_LIST_HEAD(&dev->node);
+	INIT_LIST_HEAD(&dev->devres_head);
+
+	return dev;
+}
+
+/**
+ * vm_device_add - awaken the device and attach it to the system.
+ * @dev: the device shell to instantiate.
+ * @pdata: hardware routing data from the motherboard.
+ *
+ * return: 0 on success, or a negative error code.
+ */
+int vm_device_add(struct vm_device *dev, void *pdata)
+{
+	int ret;
+
+	if (!dev || !dev->cls)
+		return -EINVAL;
+
+	if (dev->cls->instantiate) {
+		ret = dev->cls->instantiate(dev, pdata);
+		if (ret < 0)
+			return ret;
+	}
+
+	list_add_tail(&dev->node, &dev->machine->devices);
+	return 0;
+}
+
+/**
+ * vm_device_put - drop the device and release all managed resources.
+ * @dev: the device to destroy.
+ */
+void vm_device_put(struct vm_device *dev)
+{
+	if (!dev)
+		return;
+
+	vm_devres_release_all(dev);
+	free(dev);
 }
