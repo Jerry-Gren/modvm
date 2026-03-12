@@ -2,6 +2,7 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
@@ -15,6 +16,107 @@
 
 #undef pr_fmt
 #define pr_fmt(fmt) "kvm_x86: " fmt
+
+#define MAX_KVM_CPUID_ENTRIES 1024
+
+/**
+ * kvm_setup_cpuid - dynamically probe and inject host CPU features
+ * @state: the global KVM state containing the hypervisor file descriptor
+ * @vcpu_fd: the file descriptor of the target virtual processor
+ *
+ * Utilizes an exponential backoff allocation strategy to retrieve the
+ * full set of supported CPUID leaves from the host kernel, bypassing
+ * hardcoded limits that cause failures on modern high-end processors.
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+static int kvm_setup_cpuid(struct modvm_kvm_state *state, int vcpu_fd)
+{
+	struct kvm_cpuid2 *cpuid;
+	int nent = 100;
+	size_t alloc_size;
+	int ret;
+
+	while (nent <= MAX_KVM_CPUID_ENTRIES) {
+		alloc_size =
+			sizeof(*cpuid) + nent * sizeof(struct kvm_cpuid_entry2);
+		cpuid = malloc(alloc_size);
+		if (!cpuid)
+			return -ENOMEM;
+
+		cpuid->nent = nent;
+		ret = ioctl(state->kvm_fd, KVM_GET_SUPPORTED_CPUID, cpuid);
+		if (ret == 0)
+			break;
+
+		ret = -errno;
+		free(cpuid);
+
+		/* Array too small, scale up exponentially and retry */
+		if (ret == -E2BIG) {
+			nent *= 2;
+			continue;
+		}
+
+		pr_err("failed to probe supported cpuid topology: %d\n", ret);
+		return ret;
+	}
+
+	if (nent > MAX_KVM_CPUID_ENTRIES) {
+		pr_err("kvm cpuid entries exceeded safe capacity limit\n");
+		return -E2BIG;
+	}
+
+	ret = ioctl(vcpu_fd, KVM_SET_CPUID2, cpuid);
+	if (ret < 0) {
+		ret = -errno;
+		pr_err("failed to inject cpuid definitions into vcpu: %d\n",
+		       ret);
+	}
+
+	free(cpuid);
+	return ret;
+}
+
+/**
+ * modvm_kvm_arch_vcpu_init - initialize architecture specific vcpu state
+ * @vcpu: the virtual processor to initialize
+ *
+ * Encapsulates the configuration of legacy PC states such as CPUID matrices
+ * and multiprocessor AP initialization required by the Intel/AMD platform.
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+int modvm_kvm_arch_vcpu_init(struct modvm_vcpu *vcpu)
+{
+	struct modvm_kvm_vcpu_state *vcpu_state = vcpu->priv;
+	struct modvm_kvm_state *state = vcpu->accel->priv;
+	int ret;
+
+	ret = kvm_setup_cpuid(state, vcpu_state->vcpu_fd);
+	if (ret < 0)
+		return ret;
+
+	/*
+	 * Application Processors (APs) must be initialized in a specific power state,
+	 * waiting for the Bootstrap Processor (BSP) to send SIPI IPIs.
+	 */
+	if (vcpu->id > 0) {
+		struct kvm_mp_state mp_state = {
+			.mp_state = KVM_MP_STATE_UNINITIALIZED
+		};
+
+		if (ioctl(vcpu_state->vcpu_fd, KVM_SET_MP_STATE, &mp_state) <
+		    0) {
+			ret = -errno;
+			pr_err("failed to set architectural power state for ap %d: %d\n",
+			       vcpu->id, ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
 
 static void segment_to_kvm(struct kvm_segment *dst,
 			   const struct modvm_x86_segment *src)

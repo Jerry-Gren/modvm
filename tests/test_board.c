@@ -198,7 +198,7 @@ int main(void)
 	modvm_log_initialize();
 	pr_info("Initiating ModVM board integration test\n");
 	test_machine_lifecycle();
-	pr_info("SUCCESS: machine architecture test concluded gracefully\n");
+	pr_info("SUCCESS: machine architecture test concluded successfully\n");
 	modvm_log_destroy();
 	return 0;
 }

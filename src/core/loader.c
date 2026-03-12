@@ -104,7 +104,7 @@ int modvm_loader_execute(struct modvm_ctx *ctx, const char *name,
 		}
 	}
 
-	/* Enqueue cleanup callback for graceful teardown */
+	/* Enqueue cleanup callback for successful teardown */
 	ret = __modvm_ctxm_add_action(ctx, loader_instance_release, inst);
 	if (ret < 0) {
 		loader_instance_release(inst);

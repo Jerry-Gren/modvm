@@ -43,7 +43,7 @@ static void print_usage(const char *prog_name)
  * Parses user configurations, provisions the requested hardware topology
  * and bootloaders, and transitions execution to the hypervisor core.
  *
- * Return: EXIT_SUCCESS on graceful shutdown, EXIT_FAILURE on fatal errors.
+ * Return: EXIT_SUCCESS on successful shutdown, EXIT_FAILURE on fatal errors.
  */
 int main(int argc, char **argv)
 {
@@ -120,7 +120,7 @@ int main(int argc, char **argv)
 
 	modvm_destroy(&vm);
 	modvm_chardev_stdio_destroy(cfg.console);
-	pr_info("hypervisor engine shutdown gracefully\n");
+	pr_info("hypervisor engine shutdown successfully\n");
 
 	modvm_log_destroy();
 	return EXIT_SUCCESS;

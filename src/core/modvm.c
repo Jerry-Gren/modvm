@@ -121,7 +121,7 @@ int modvm_init(struct modvm_ctx *ctx, const struct modvm_config *config)
  * modvm_run - ignite the processor cores and enter the main dispatch loop
  * @ctx: the fully initialized context object
  *
- * Return: 0 upon graceful shutdown, or a negative error code.
+ * Return: 0 upon successful shutdown, or a negative error code.
  */
 int modvm_run(struct modvm_ctx *ctx)
 {
@@ -170,7 +170,7 @@ int modvm_run(struct modvm_ctx *ctx)
 			os_thread_join(ctx->vcpu_threads[i]);
 	}
 
-	pr_info("context powered off gracefully\n");
+	pr_info("context powered off successfully\n");
 	return 0;
 }
 

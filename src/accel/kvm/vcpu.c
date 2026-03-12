@@ -22,44 +22,6 @@
 #define pr_fmt(fmt) "kvm_vcpu: " fmt
 
 /**
- * setup_kvm_cpuid - inject host CPU features into the virtual processor
- * @state: the global KVM state
- * @vcpu_fd: the file descriptor of the target virtual processor
- *
- * KVM does not populate CPUID by default. Modern OS kernels (like Linux)
- * strictly require CPUID to probe features (e.g., 64-bit Long Mode).
- * Without this, the guest kernel will silently halt immediately upon boot.
- *
- * Return: 0 on success, or a negative error code.
- */
-static int setup_kvm_cpuid(struct modvm_kvm_state *state, int vcpu_fd)
-{
-	struct kvm_cpuid2 *cpuid;
-	int ret = 0;
-
-	/* Allocate enough space for up to 100 CPUID entries */
-	cpuid = malloc(sizeof(*cpuid) + 100 * sizeof(struct kvm_cpuid_entry2));
-	if (!cpuid)
-		return -ENOMEM;
-
-	cpuid->nent = 100;
-	if (ioctl(state->kvm_fd, KVM_GET_SUPPORTED_CPUID, cpuid) < 0) {
-		pr_err("failed to acquire supported cpuid topology from host kernel\n");
-		ret = -errno;
-		goto out;
-	}
-
-	if (ioctl(vcpu_fd, KVM_SET_CPUID2, cpuid) < 0) {
-		pr_err("failed to inject cpuid definitions into vcpu\n");
-		ret = -errno;
-	}
-
-out:
-	free(cpuid);
-	return ret;
-}
-
-/**
  * kvm_vcpu_init - request a hardware virtual processor from the host kernel
  * @vcpu: the core vcpu structure to populate
  *
@@ -82,23 +44,12 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 		goto err_free_state;
 	}
 
-	ret = setup_kvm_cpuid(state, vcpu_state->vcpu_fd);
+	/* Assign early so architecture hooks can access the specific state */
+	vcpu->priv = vcpu_state;
+
+	ret = modvm_kvm_arch_vcpu_init(vcpu);
 	if (ret < 0)
 		goto err_close_fd;
-
-	if (vcpu->id > 0) {
-		struct kvm_mp_state mp_state = {
-			.mp_state = KVM_MP_STATE_UNINITIALIZED
-		};
-
-		if (ioctl(vcpu_state->vcpu_fd, KVM_SET_MP_STATE, &mp_state) <
-		    0) {
-			pr_err("failed to set architectural power state for ap %d\n",
-			       vcpu->id);
-			ret = -errno;
-			goto err_close_fd;
-		}
-	}
 
 	vcpu_state->run_size = ioctl(state->kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
 	if (vcpu_state->run_size < 0) {
@@ -107,7 +58,7 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 		goto err_close_fd;
 	}
 
-	vcpu_state->run = mmap(NULL, vcpu_state->run_size,
+	vcpu_state->run = mmap(NULL, (size_t)vcpu_state->run_size,
 			       PROT_READ | PROT_WRITE, MAP_SHARED,
 			       vcpu_state->vcpu_fd, 0);
 	if (vcpu_state->run == MAP_FAILED) {
@@ -116,7 +67,6 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 		goto err_close_fd;
 	}
 
-	vcpu->priv = vcpu_state;
 	pr_info("vcpu %d mapped and initialized\n", vcpu->id);
 	return 0;
 
@@ -124,6 +74,7 @@ err_close_fd:
 	close(vcpu_state->vcpu_fd);
 err_free_state:
 	free(vcpu_state);
+	vcpu->priv = NULL;
 	return ret;
 }
 
@@ -144,9 +95,6 @@ static int kvm_vcpu_set_regs_wrap(struct modvm_vcpu *vcpu,
 /**
  * handle_mmio_exit - route memory-mapped IO traps to the system bus
  * @vcpu: the trapped virtual processor
- *
- * This is a hot path execution flow. It extracts the payload from the KVM
- * shared memory window and dispatches it into the emulator's device tree.
  */
 static void handle_mmio_exit(struct modvm_vcpu *vcpu)
 {
@@ -203,11 +151,7 @@ static int setup_kvm_sigmask(struct modvm_kvm_vcpu_state *state)
  * kvm_vcpu_run - enter the execution loop of the hardware processor
  * @vcpu: the virtual processor to run
  *
- * The critical hot path of the hypervisor. Relinquishes CPU time to the
- * guest operating system and only returns to userspace upon encountering
- * unhandled hardware traps (VMEXITs).
- *
- * Return: 0 on graceful exit, or a negative error code.
+ * Return: 0 on successful exit, or a negative error code.
  */
 static int kvm_vcpu_run(struct modvm_vcpu *vcpu)
 {
@@ -271,8 +215,14 @@ static void kvm_vcpu_destroy(struct modvm_vcpu *vcpu)
 {
 	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 
-	munmap(state->run, state->run_size);
-	close(state->vcpu_fd);
+	if (!state)
+		return;
+
+	if (state->run)
+		munmap(state->run, (size_t)state->run_size);
+	if (state->vcpu_fd >= 0)
+		close(state->vcpu_fd);
+
 	free(state);
 }
 

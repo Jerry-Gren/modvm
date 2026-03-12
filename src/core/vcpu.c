@@ -75,7 +75,7 @@ int modvm_vcpu_set_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
  * modvm_vcpu_run - transition into the hardware execution loop
  * @vcpu: the virtual processor to run
  *
- * Return: 0 on graceful guest exit, or a negative error code.
+ * Return: 0 on successful guest exit, or a negative error code.
  */
 int modvm_vcpu_run(struct modvm_vcpu *vcpu)
 {
