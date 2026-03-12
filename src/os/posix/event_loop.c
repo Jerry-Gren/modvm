@@ -53,6 +53,33 @@ static void posix_event_loop_close(struct posix_event_loop *loop)
 }
 
 /**
+ * event_loop_compact - eliminate tombstones and compress event arrays
+ * @loop: the posix event loop structure
+ *
+ * Performs a garbage collection pass over the polling arrays. It shifts
+ * active file descriptors leftwards to overwrite slots marked as deleted.
+ * This guarantees a dense array is passed to the kernel, optimizing the
+ * poll() system call and preventing descriptor exhaustion.
+ */
+static void event_loop_compact(struct posix_event_loop *loop)
+{
+	int i;
+	int valid_count = 0;
+
+	for (i = 0; i < loop->nr_events; i++) {
+		if (loop->poll_fds[i].fd != -1) {
+			if (i != valid_count) {
+				loop->poll_fds[valid_count] = loop->poll_fds[i];
+				loop->events[valid_count] = loop->events[i];
+			}
+			valid_count++;
+		}
+	}
+
+	loop->nr_events = valid_count;
+}
+
+/**
  * modvm_event_loop_init - initialize the asynchronous event dispatcher
  * @ctx: the isolated machine context
  *
@@ -112,30 +139,43 @@ int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
 {
 	struct posix_event_loop *loop;
 	short poll_ev = 0;
+	int slot = -1;
+	int i;
 
 	if (WARN_ON(!ctx || !ctx->event_loop.priv))
 		return -EINVAL;
 
 	loop = ctx->event_loop.priv;
 
-	if (WARN_ON(loop->nr_events >= MAX_POLL_EVENTS))
-		return -ENOSPC;
-
 	if (events_mask & MODVM_EVENT_READ)
 		poll_ev |= POLLIN;
 	if (events_mask & MODVM_EVENT_WRITE)
 		poll_ev |= POLLOUT;
 
-	loop->poll_fds[loop->nr_events].fd = fd;
-	loop->poll_fds[loop->nr_events].events = poll_ev;
-	loop->poll_fds[loop->nr_events].revents = 0;
+	/* Scan for a tombstone (soft-deleted) slot to reuse */
+	for (i = 0; i < loop->nr_events; i++) {
+		if (loop->poll_fds[i].fd == -1) {
+			slot = i;
+			break;
+		}
+	}
 
-	loop->events[loop->nr_events].fd = fd;
-	loop->events[loop->nr_events].cb = cb;
-	loop->events[loop->nr_events].data = data;
+	/* Append to the end if no free slots exist */
+	if (slot == -1) {
+		if (WARN_ON(loop->nr_events >= MAX_POLL_EVENTS))
+			return -ENOSPC;
+		slot = loop->nr_events++;
+	}
 
-	loop->nr_events++;
-	pr_debug("monitoring descriptor %d\n", fd);
+	loop->poll_fds[slot].fd = fd;
+	loop->poll_fds[slot].events = poll_ev;
+	loop->poll_fds[slot].revents = 0;
+
+	loop->events[slot].fd = fd;
+	loop->events[slot].cb = cb;
+	loop->events[slot].data = data;
+
+	pr_debug("monitoring descriptor %d at slot %d\n", fd, slot);
 
 	return 0;
 }
@@ -144,12 +184,15 @@ int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
  * modvm_event_loop_rm_fd - stop monitoring a host descriptor
  * @ctx: the machine context
  * @fd: the descriptor to remove
+ *
+ * Utilizes a tombstone (soft-delete) mechanism by setting the descriptor
+ * to -1. This explicitly prevents array shifting during active event
+ * dispatching, solving the iterator collapse vulnerability.
  */
 void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
 {
 	struct posix_event_loop *loop;
 	int i;
-	int j;
 
 	if (WARN_ON(!ctx || !ctx->event_loop.priv))
 		return;
@@ -158,11 +201,17 @@ void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
 
 	for (i = 0; i < loop->nr_events; i++) {
 		if (loop->poll_fds[i].fd == fd) {
-			for (j = i; j < loop->nr_events - 1; j++) {
-				loop->poll_fds[j] = loop->poll_fds[j + 1];
-				loop->events[j] = loop->events[j + 1];
-			}
-			loop->nr_events--;
+			/* * Soft-delete. POSIX poll() will natively ignore fds < 0.
+             * The slot will be collected during the next compaction pass.
+             */
+			loop->poll_fds[i].fd = -1;
+			loop->poll_fds[i].events = 0;
+			loop->poll_fds[i].revents = 0;
+
+			loop->events[i].fd = -1;
+			loop->events[i].cb = NULL;
+			loop->events[i].data = NULL;
+
 			pr_debug("relinquished monitoring of descriptor %d\n",
 				 fd);
 			return;
@@ -190,6 +239,9 @@ int modvm_event_loop_run(struct modvm_ctx *ctx)
 	loop->is_running = true;
 
 	while (loop->is_running) {
+		/* Compress the array outside the dispatching phase */
+		event_loop_compact(loop);
+
 		ret = poll(loop->poll_fds, loop->nr_events, -1);
 		if (unlikely(ret < 0)) {
 			if (errno == EINTR)
@@ -199,6 +251,13 @@ int modvm_event_loop_run(struct modvm_ctx *ctx)
 		}
 
 		for (i = 0; i < loop->nr_events; i++) {
+			/*
+			 * Skip if a previous callback in this loop iteration 
+			 * removed this descriptor (soft-delete).
+			 */
+			if (unlikely(loop->poll_fds[i].fd == -1))
+				continue;
+
 			if (!loop->poll_fds[i].revents)
 				continue;
 
