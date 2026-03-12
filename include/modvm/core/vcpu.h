@@ -3,21 +3,36 @@
 #define MODVM_CORE_VCPU_H
 
 #include <stdint.h>
-#include <modvm/core/accel.h>
+#include <modvm/utils/stddef.h>
 
+struct modvm_accel;
 struct modvm_vcpu;
 
 /**
- * struct modvm_vcpu_ops - virtual processor hardware operations
- * @init: allocate and map hardware vCPU resources
- * @destroy: release hardware vCPU resources
- * @set_pc: configure the physical address of the instruction pointer
- * @run: enter the hardware virtualization execution loop
+ * enum modvm_reg_class - identifiers for architectural register groups
+ * @MODVM_REG_CLASS_X86_GPR: x86 general purpose registers
+ * @MODVM_REG_CLASS_X86_SREGS: x86 special and segment registers
+ */
+enum modvm_reg_class {
+	MODVM_REG_CLASS_X86_GPR,
+	MODVM_REG_CLASS_X86_SREGS,
+};
+
+/**
+ * struct modvm_vcpu_ops - backend operations for virtual processors
+ * @init: initialize processor state
+ * @destroy: release processor resources
+ * @get_regs: read architectural register group
+ * @set_regs: write architectural register group
+ * @run: enter hardware execution loop
  */
 struct modvm_vcpu_ops {
 	int (*init)(struct modvm_vcpu *vcpu);
 	void (*destroy)(struct modvm_vcpu *vcpu);
-	int (*set_pc)(struct modvm_vcpu *vcpu, uint64_t pc);
+	int (*get_regs)(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
+			void *buf, size_t size);
+	int (*set_regs)(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
+			const void *buf, size_t size);
 	int (*run)(struct modvm_vcpu *vcpu);
 };
 
@@ -36,7 +51,10 @@ struct modvm_vcpu {
 };
 
 int modvm_vcpu_init(struct modvm_vcpu *vcpu, struct modvm_accel *accel, int id);
-int modvm_vcpu_set_pc(struct modvm_vcpu *vcpu, uint64_t pc);
+int modvm_vcpu_get_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
+			void *buf, size_t size);
+int modvm_vcpu_set_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
+			const void *buf, size_t size);
 int modvm_vcpu_run(struct modvm_vcpu *vcpu);
 void modvm_vcpu_destroy(struct modvm_vcpu *vcpu);
 

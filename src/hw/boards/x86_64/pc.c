@@ -65,14 +65,14 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	}
 
 	ret = modvm_mem_region_add(&ctx->accel.mem_space, 0x00000000, low_ram,
-				   MODVM_MEM_READONLY | MODVM_MEM_EXEC);
+				   MODVM_MEM_EXEC);
 	if (ret < 0)
 		return ret;
 
 	if (high_ram > 0) {
 		ret = modvm_mem_region_add(&ctx->accel.mem_space,
 					   PC_HIGH_RAM_BASE, high_ram,
-					   MODVM_MEM_READONLY | MODVM_MEM_EXEC);
+					   MODVM_MEM_EXEC);
 		if (ret < 0)
 			return ret;
 	}
@@ -126,28 +126,23 @@ err_uart:
 /**
  * pc_board_reset - orchestrate the boot sequence for the PC architecture
  * @ctx: the context instance to reset
- *
+ * 
  * Return: 0 on success, or a negative error code.
  */
 static int pc_board_reset(struct modvm_ctx *ctx)
 {
-	uint64_t boot_pc = 0x0000;
 	int ret;
 
-	if (ctx->config.firmware_path) {
-		ret = modvm_loader_load_raw(&ctx->accel.mem_space,
-					    ctx->config.firmware_path, boot_pc);
+	/* Delegate entirely to the pluggable loader framework */
+	if (ctx->config.loader_name && ctx->config.loader_opts) {
+		ret = modvm_loader_execute(ctx, ctx->config.loader_name,
+					   ctx->config.loader_opts);
 		if (ret < 0) {
-			pr_err("failed to inject firmware payload: %s\n",
-			       ctx->config.firmware_path);
+			pr_err("board reset failed during firmware handoff\n");
 			return ret;
 		}
-	}
-
-	ret = modvm_vcpu_set_pc(ctx->vcpus[0], boot_pc);
-	if (ret < 0) {
-		pr_err("failed to configure bootstrap processor reset vector\n");
-		return ret;
+	} else {
+		pr_warn("no loader or firmware specified, processor will halt\n");
 	}
 
 	return 0;

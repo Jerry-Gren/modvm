@@ -2,7 +2,7 @@
 #ifndef MODVM_CORE_RES_POOL_H
 #define MODVM_CORE_RES_POOL_H
 
-#include <stddef.h>
+#include <modvm/utils/stddef.h>
 #include <modvm/utils/list.h>
 
 /**

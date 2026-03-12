@@ -12,23 +12,39 @@
 #undef pr_fmt
 #define pr_fmt(fmt) "main: " fmt
 
+/**
+ * print_usage - display command line interface documentation
+ * @prog_name: the executable name invoked by the user
+ */
 static void print_usage(const char *prog_name)
 {
 	fprintf(stderr, "Usage: %s [options]\n\n", prog_name);
 	fprintf(stderr, "Options:\n");
 	fprintf(stderr,
-		"  -board <name>     select emulated motherboard (default: pc)\n");
+		"  -board <name>       select emulated motherboard (default: pc)\n");
 	fprintf(stderr,
-		"  -m <megabytes>    set guest ram size in mb (default: 16)\n");
+		"  -m <megabytes>      set guest ram size in mb (default: 16)\n");
 	fprintf(stderr,
-		"  -smp <cpus>       set number of virtual cpus (default: 1)\n");
+		"  -smp <cpus>         set number of virtual cpus (default: 1)\n");
 	fprintf(stderr,
-		"  -kernel <file>    load a flat binary firmware or kernel image\n");
+		"  -accel <name>       select hypervisor backend (default: kvm)\n");
 	fprintf(stderr,
-		"  -accel <name>     select hypervisor backend (default: kvm)\n");
-	fprintf(stderr, "  -h                show this help message\n");
+		"  -loader <name>      select boot protocol plugin (default: raw-x86)\n");
+	fprintf(stderr,
+		"  -loader-opts <opts> pass configuration string to the loader plugin\n");
+	fprintf(stderr, "  -h                  show this help message\n");
 }
 
+/**
+ * main - primary entry point for the virtualization engine
+ * @argc: argument count
+ * @argv: argument vector
+ *
+ * Parses user configurations, provisions the requested hardware topology
+ * and bootloaders, and transitions execution to the hypervisor core.
+ *
+ * Return: EXIT_SUCCESS on graceful shutdown, EXIT_FAILURE on fatal errors.
+ */
 int main(int argc, char **argv)
 {
 	struct modvm_ctx vm;
@@ -37,7 +53,8 @@ int main(int argc, char **argv)
 		.ram_base = 0x0000,
 		.ram_size = 16 * 1024 * 1024,
 		.nr_vcpus = 1,
-		.firmware_path = NULL,
+		.loader_name = "raw-x86",
+		.loader_opts = NULL,
 		.board = NULL,
 		.console = NULL,
 	};
@@ -59,20 +76,22 @@ int main(int argc, char **argv)
 			cfg.ram_size = (size_t)atoi(argv[++i]) * 1024 * 1024;
 		} else if (strcmp(argv[i], "-smp") == 0 && i + 1 < argc) {
 			cfg.nr_vcpus = (unsigned int)atoi(argv[++i]);
-		} else if (strcmp(argv[i], "-kernel") == 0 && i + 1 < argc) {
-			cfg.firmware_path = argv[++i];
 		} else if (strcmp(argv[i], "-accel") == 0 && i + 1 < argc) {
 			cfg.accel_name = argv[++i];
+		} else if (strcmp(argv[i], "-loader") == 0 && i + 1 < argc) {
+			cfg.loader_name = argv[++i];
+		} else if (strcmp(argv[i], "-loader-opts") == 0 &&
+			   i + 1 < argc) {
+			cfg.loader_opts = argv[++i];
 		} else {
-			pr_err("unknown option: %s\n", argv[i]);
+			pr_err("unknown or incomplete option: %s\n", argv[i]);
 			print_usage(argv[0]);
 			return EXIT_FAILURE;
 		}
 	}
 
-	if (!cfg.firmware_path) {
-		pr_err("no firmware or kernel image specified. use -kernel <file>\n");
-		return EXIT_FAILURE;
+	if (!cfg.loader_opts) {
+		pr_warn("no loader options specified, processor may lack a boot payload\n");
 	}
 
 	cfg.board = modvm_board_find(board_name);
@@ -109,7 +128,8 @@ int main(int argc, char **argv)
 err_destroy_vm:
 	/* Trigger the context-managed cleanup loop to catch partial allocations */
 	modvm_destroy(&vm);
-	modvm_chardev_stdio_destroy(cfg.console);
+	if (cfg.console)
+		modvm_chardev_stdio_destroy(cfg.console);
 	modvm_log_destroy();
 	return EXIT_FAILURE;
 }

@@ -2,7 +2,7 @@
 #ifndef MODVM_CORE_CTXM_H
 #define MODVM_CORE_CTXM_H
 
-#include <stddef.h>
+#include <modvm/utils/stddef.h>
 #include <modvm/core/modvm.h>
 
 void *modvm_ctxm_malloc(struct modvm_ctx *ctx, size_t size);

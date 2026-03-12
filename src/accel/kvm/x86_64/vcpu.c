@@ -6,46 +6,207 @@
 #include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
 #include <modvm/core/modvm.h>
+#include <modvm/arch/x86/regs.h>
 #include <modvm/utils/container_of.h>
 #include <modvm/utils/log.h>
-#include <modvm/utils/compiler.h>
+#include <modvm/utils/bug.h>
 
 #include "../internal.h"
 
 #undef pr_fmt
 #define pr_fmt(fmt) "kvm_x86: " fmt
 
+static void segment_to_kvm(struct kvm_segment *dst,
+			   const struct modvm_x86_segment *src)
+{
+	dst->base = src->base;
+	dst->limit = src->limit;
+	dst->selector = src->selector;
+	dst->type = src->type;
+	dst->present = src->present;
+	dst->dpl = src->dpl;
+	dst->db = src->db;
+	dst->s = src->s;
+	dst->l = src->l;
+	dst->g = src->g;
+	dst->unusable = src->unusable;
+}
+
+static void kvm_to_segment(struct modvm_x86_segment *dst,
+			   const struct kvm_segment *src)
+{
+	dst->base = src->base;
+	dst->limit = src->limit;
+	dst->selector = src->selector;
+	dst->type = src->type;
+	dst->present = src->present;
+	dst->dpl = src->dpl;
+	dst->db = src->db;
+	dst->s = src->s;
+	dst->l = src->l;
+	dst->g = src->g;
+	dst->unusable = src->unusable;
+}
+
 /**
- * modvm_kvm_arch_vcpu_set_pc - set the instruction pointer for x86_64
+ * modvm_kvm_arch_vcpu_get_regs - fetch x86 architectural state from KVM
  * @vcpu: the virtual processor
- * @pc: the physical address to begin execution
- *
- * Prepares the segment registers to enter 16-bit real mode.
+ * @reg_class: identifier specifying GPRs or Special Registers
+ * @buf: destination buffer
+ * @size: expected size of the modvm architectural structure
  *
  * Return: 0 on success, or a negative error code.
  */
-int modvm_kvm_arch_vcpu_set_pc(struct modvm_vcpu *vcpu, uint64_t pc)
+int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
+				 enum modvm_reg_class reg_class, void *buf,
+				 size_t size)
 {
 	struct modvm_kvm_vcpu_state *state = vcpu->priv;
-	struct kvm_sregs sregs;
-	struct kvm_regs regs;
 
-	if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &sregs) < 0)
-		return -errno;
+	if (reg_class == MODVM_REG_CLASS_X86_SREGS) {
+		struct kvm_sregs k_sregs;
+		struct modvm_x86_sregs *m_sregs = buf;
 
-	sregs.cs.selector = 0;
-	sregs.cs.base = 0;
-	if (ioctl(state->vcpu_fd, KVM_SET_SREGS, &sregs) < 0)
-		return -errno;
+		if (WARN_ON(size != sizeof(*m_sregs)))
+			return -EINVAL;
 
-	memset(&regs, 0, sizeof(regs));
-	regs.rip = pc;
-	regs.rflags = 0x2;
+		if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &k_sregs) < 0)
+			return -errno;
 
-	if (ioctl(state->vcpu_fd, KVM_SET_REGS, &regs) < 0)
-		return -errno;
+		kvm_to_segment(&m_sregs->cs, &k_sregs.cs);
+		kvm_to_segment(&m_sregs->ds, &k_sregs.ds);
+		kvm_to_segment(&m_sregs->es, &k_sregs.es);
+		kvm_to_segment(&m_sregs->fs, &k_sregs.fs);
+		kvm_to_segment(&m_sregs->gs, &k_sregs.gs);
+		kvm_to_segment(&m_sregs->ss, &k_sregs.ss);
+		kvm_to_segment(&m_sregs->tr, &k_sregs.tr);
+		kvm_to_segment(&m_sregs->ldt, &k_sregs.ldt);
 
-	return 0;
+		m_sregs->cr0 = k_sregs.cr0;
+		m_sregs->cr2 = k_sregs.cr2;
+		m_sregs->cr3 = k_sregs.cr3;
+		m_sregs->cr4 = k_sregs.cr4;
+		m_sregs->cr8 = k_sregs.cr8;
+		m_sregs->efer = k_sregs.efer;
+		m_sregs->apic_base = k_sregs.apic_base;
+		return 0;
+	}
+
+	if (reg_class == MODVM_REG_CLASS_X86_GPR) {
+		struct kvm_regs k_regs;
+		struct modvm_x86_regs *m_regs = buf;
+
+		if (WARN_ON(size != sizeof(*m_regs)))
+			return -EINVAL;
+
+		if (ioctl(state->vcpu_fd, KVM_GET_REGS, &k_regs) < 0)
+			return -errno;
+
+		m_regs->rax = k_regs.rax;
+		m_regs->rbx = k_regs.rbx;
+		m_regs->rcx = k_regs.rcx;
+		m_regs->rdx = k_regs.rdx;
+		m_regs->rsi = k_regs.rsi;
+		m_regs->rdi = k_regs.rdi;
+		m_regs->rsp = k_regs.rsp;
+		m_regs->rbp = k_regs.rbp;
+		m_regs->r8 = k_regs.r8;
+		m_regs->r9 = k_regs.r9;
+		m_regs->r10 = k_regs.r10;
+		m_regs->r11 = k_regs.r11;
+		m_regs->r12 = k_regs.r12;
+		m_regs->r13 = k_regs.r13;
+		m_regs->r14 = k_regs.r14;
+		m_regs->r15 = k_regs.r15;
+		m_regs->rip = k_regs.rip;
+		m_regs->rflags = k_regs.rflags;
+		return 0;
+	}
+
+	return -ENOTSUP;
+}
+
+/**
+ * modvm_kvm_arch_vcpu_set_regs - commit x86 architectural state to KVM
+ * @vcpu: the virtual processor
+ * @reg_class: identifier specifying GPRs or Special Registers
+ * @buf: source buffer
+ * @size: expected size of the modvm architectural structure
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
+				 enum modvm_reg_class reg_class,
+				 const void *buf, size_t size)
+{
+	struct modvm_kvm_vcpu_state *state = vcpu->priv;
+
+	if (reg_class == MODVM_REG_CLASS_X86_SREGS) {
+		struct kvm_sregs k_sregs;
+		const struct modvm_x86_sregs *m_sregs = buf;
+
+		if (WARN_ON(size != sizeof(*m_sregs)))
+			return -EINVAL;
+
+		/* Fetch existing state to preserve unmapped fields like interrupt bitmaps */
+		if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &k_sregs) < 0)
+			return -errno;
+
+		segment_to_kvm(&k_sregs.cs, &m_sregs->cs);
+		segment_to_kvm(&k_sregs.ds, &m_sregs->ds);
+		segment_to_kvm(&k_sregs.es, &m_sregs->es);
+		segment_to_kvm(&k_sregs.fs, &m_sregs->fs);
+		segment_to_kvm(&k_sregs.gs, &m_sregs->gs);
+		segment_to_kvm(&k_sregs.ss, &m_sregs->ss);
+		segment_to_kvm(&k_sregs.tr, &m_sregs->tr);
+		segment_to_kvm(&k_sregs.ldt, &m_sregs->ldt);
+
+		k_sregs.cr0 = m_sregs->cr0;
+		k_sregs.cr2 = m_sregs->cr2;
+		k_sregs.cr3 = m_sregs->cr3;
+		k_sregs.cr4 = m_sregs->cr4;
+		k_sregs.cr8 = m_sregs->cr8;
+		k_sregs.efer = m_sregs->efer;
+		k_sregs.apic_base = m_sregs->apic_base;
+
+		if (ioctl(state->vcpu_fd, KVM_SET_SREGS, &k_sregs) < 0)
+			return -errno;
+		return 0;
+	}
+
+	if (reg_class == MODVM_REG_CLASS_X86_GPR) {
+		struct kvm_regs k_regs;
+		const struct modvm_x86_regs *m_regs = buf;
+
+		if (WARN_ON(size != sizeof(*m_regs)))
+			return -EINVAL;
+
+		memset(&k_regs, 0, sizeof(k_regs));
+		k_regs.rax = m_regs->rax;
+		k_regs.rbx = m_regs->rbx;
+		k_regs.rcx = m_regs->rcx;
+		k_regs.rdx = m_regs->rdx;
+		k_regs.rsi = m_regs->rsi;
+		k_regs.rdi = m_regs->rdi;
+		k_regs.rsp = m_regs->rsp;
+		k_regs.rbp = m_regs->rbp;
+		k_regs.r8 = m_regs->r8;
+		k_regs.r9 = m_regs->r9;
+		k_regs.r10 = m_regs->r10;
+		k_regs.r11 = m_regs->r11;
+		k_regs.r12 = m_regs->r12;
+		k_regs.r13 = m_regs->r13;
+		k_regs.r14 = m_regs->r14;
+		k_regs.r15 = m_regs->r15;
+		k_regs.rip = m_regs->rip;
+		k_regs.rflags = m_regs->rflags;
+
+		if (ioctl(state->vcpu_fd, KVM_SET_REGS, &k_regs) < 0)
+			return -errno;
+		return 0;
+	}
+
+	return -ENOTSUP;
 }
 
 /**

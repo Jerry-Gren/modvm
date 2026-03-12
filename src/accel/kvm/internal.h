@@ -29,7 +29,12 @@ struct modvm_kvm_vcpu_state {
 	struct kvm_run *run;
 };
 
-int modvm_kvm_arch_vcpu_set_pc(struct modvm_vcpu *vcpu, uint64_t pc);
+int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
+				 enum modvm_reg_class reg_class, void *buf,
+				 size_t size);
+int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
+				 enum modvm_reg_class reg_class,
+				 const void *buf, size_t size);
 int modvm_kvm_arch_vcpu_handle_exit(struct modvm_vcpu *vcpu,
 				    struct kvm_run *run);
 

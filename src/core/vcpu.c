@@ -2,6 +2,7 @@
 #include <errno.h>
 
 #include <modvm/core/vcpu.h>
+#include <modvm/core/accel.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
 
@@ -29,21 +30,45 @@ int modvm_vcpu_init(struct modvm_vcpu *vcpu, struct modvm_accel *accel, int id)
 }
 
 /**
- * modvm_vcpu_set_pc - configure the CPU instruction pointer
+ * modvm_vcpu_get_regs - fetch architectural register state from backend
  * @vcpu: the virtual processor
- * @pc: the physical address to begin execution
+ * @reg_class: the identifier of the register group to read
+ * @buf: destination buffer
+ * @size: expected size of the architectural register structure
  *
  * Return: 0 on success, or a negative error code.
  */
-int modvm_vcpu_set_pc(struct modvm_vcpu *vcpu, uint64_t pc)
+int modvm_vcpu_get_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
+			void *buf, size_t size)
 {
-	if (WARN_ON(!vcpu || !vcpu->ops))
+	if (WARN_ON(!vcpu || !vcpu->ops || !buf || size == 0))
 		return -EINVAL;
 
-	if (!vcpu->ops->set_pc)
+	if (!vcpu->ops->get_regs)
 		return -ENOTSUP;
 
-	return vcpu->ops->set_pc(vcpu, pc);
+	return vcpu->ops->get_regs(vcpu, reg_class, buf, size);
+}
+
+/**
+ * modvm_vcpu_set_regs - commit architectural register state to backend
+ * @vcpu: the virtual processor
+ * @reg_class: the identifier of the register group to write
+ * @buf: source buffer containing the new state
+ * @size: expected size of the architectural register structure
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+int modvm_vcpu_set_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
+			const void *buf, size_t size)
+{
+	if (WARN_ON(!vcpu || !vcpu->ops || !buf || size == 0))
+		return -EINVAL;
+
+	if (!vcpu->ops->set_regs)
+		return -ENOTSUP;
+
+	return vcpu->ops->set_regs(vcpu, reg_class, buf, size);
 }
 
 /**

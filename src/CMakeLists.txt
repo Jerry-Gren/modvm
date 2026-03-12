@@ -18,6 +18,8 @@ file(GLOB BOARD_SOURCES CONFIGURE_DEPENDS "hw/boards/${MODVM_ARCH}/*.c")
 file(GLOB ACCEL_SOURCES CONFIGURE_DEPENDS "accel/kvm/*.c")
 file(GLOB ACCEL_ARCH_SOURCES CONFIGURE_DEPENDS "accel/kvm/${MODVM_ARCH}/*.c")
 
+file(GLOB LOADER_SOURCES CONFIGURE_DEPENDS "loader/*.c")
+
 # Build an OBJECT library
 # Using an OBJECT library allows us to compile these files into object files 
 # without creating a heavy static/shared library file, aiding in modular linking.
@@ -30,6 +32,7 @@ add_library(modvm_core OBJECT
     ${BOARD_SOURCES}
     ${ACCEL_SOURCES}
     ${ACCEL_ARCH_SOURCES}
+    ${LOADER_SOURCES}
 )
 
 # Export public header directories

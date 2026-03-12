@@ -2,7 +2,7 @@
 #ifndef MODVM_CORE_DEVM_H
 #define MODVM_CORE_DEVM_H
 
-#include <stddef.h>
+#include <modvm/utils/stddef.h>
 #include <modvm/core/device.h>
 
 void *modvm_devm_malloc(struct modvm_device *dev, size_t size);

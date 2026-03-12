@@ -22,6 +22,44 @@
 #define pr_fmt(fmt) "kvm_vcpu: " fmt
 
 /**
+ * setup_kvm_cpuid - inject host CPU features into the virtual processor
+ * @state: the global KVM state
+ * @vcpu_fd: the file descriptor of the target virtual processor
+ *
+ * KVM does not populate CPUID by default. Modern OS kernels (like Linux)
+ * strictly require CPUID to probe features (e.g., 64-bit Long Mode).
+ * Without this, the guest kernel will silently halt immediately upon boot.
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+static int setup_kvm_cpuid(struct modvm_kvm_state *state, int vcpu_fd)
+{
+	struct kvm_cpuid2 *cpuid;
+	int ret = 0;
+
+	/* Allocate enough space for up to 100 CPUID entries */
+	cpuid = malloc(sizeof(*cpuid) + 100 * sizeof(struct kvm_cpuid_entry2));
+	if (!cpuid)
+		return -ENOMEM;
+
+	cpuid->nent = 100;
+	if (ioctl(state->kvm_fd, KVM_GET_SUPPORTED_CPUID, cpuid) < 0) {
+		pr_err("failed to acquire supported cpuid topology from host kernel\n");
+		ret = -errno;
+		goto out;
+	}
+
+	if (ioctl(vcpu_fd, KVM_SET_CPUID2, cpuid) < 0) {
+		pr_err("failed to inject cpuid definitions into vcpu\n");
+		ret = -errno;
+	}
+
+out:
+	free(cpuid);
+	return ret;
+}
+
+/**
  * kvm_vcpu_init - request a hardware virtual processor from the host kernel
  * @vcpu: the core vcpu structure to populate
  *
@@ -43,6 +81,10 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 		ret = -errno;
 		goto err_free_state;
 	}
+
+	ret = setup_kvm_cpuid(state, vcpu_state->vcpu_fd);
+	if (ret < 0)
+		goto err_close_fd;
 
 	if (vcpu->id > 0) {
 		struct kvm_mp_state mp_state = {
@@ -85,9 +127,18 @@ err_free_state:
 	return ret;
 }
 
-static int kvm_vcpu_set_pc_wrap(struct modvm_vcpu *vcpu, uint64_t pc)
+static int kvm_vcpu_get_regs_wrap(struct modvm_vcpu *vcpu,
+				  enum modvm_reg_class reg_class, void *buf,
+				  size_t size)
 {
-	return modvm_kvm_arch_vcpu_set_pc(vcpu, pc);
+	return modvm_kvm_arch_vcpu_get_regs(vcpu, reg_class, buf, size);
+}
+
+static int kvm_vcpu_set_regs_wrap(struct modvm_vcpu *vcpu,
+				  enum modvm_reg_class reg_class,
+				  const void *buf, size_t size)
+{
+	return modvm_kvm_arch_vcpu_set_regs(vcpu, reg_class, buf, size);
 }
 
 /**
@@ -228,6 +279,7 @@ static void kvm_vcpu_destroy(struct modvm_vcpu *vcpu)
 const struct modvm_vcpu_ops modvm_kvm_vcpu_ops = {
 	.init = kvm_vcpu_init,
 	.destroy = kvm_vcpu_destroy,
-	.set_pc = kvm_vcpu_set_pc_wrap,
+	.get_regs = kvm_vcpu_get_regs_wrap,
+	.set_regs = kvm_vcpu_set_regs_wrap,
 	.run = kvm_vcpu_run,
 };

@@ -17,6 +17,7 @@
 #include <modvm/core/irq.h>
 #include <modvm/hw/serial.h>
 #include <modvm/backends/char/stdio.h>
+#include <modvm/arch/x86/regs.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "test_board: " fmt
@@ -45,8 +46,7 @@ static int mock_board_init(struct modvm_ctx *ctx)
 	struct mock_irq_route *route;
 	int ret;
 
-	ret = modvm_mem_region_add(&ctx->accel.mem_space, 0x0000, 4096,
-				   MODVM_MEM_READONLY | MODVM_MEM_EXEC);
+	ret = modvm_mem_region_add(&ctx->accel.mem_space, 0x0000, 4096, 0);
 	if (ret < 0)
 		return ret;
 
@@ -104,6 +104,8 @@ err_uart:
 
 static int mock_board_reset(struct modvm_ctx *ctx)
 {
+	struct modvm_x86_sregs sregs;
+	struct modvm_x86_regs regs;
 	void *hva;
 	int ret;
 
@@ -117,7 +119,25 @@ static int mock_board_reset(struct modvm_ctx *ctx)
 	pr_info("injected %zu bytes of machine code into guest memory\n",
 		sizeof(fw_payload));
 
-	ret = modvm_vcpu_set_pc(ctx->vcpus[0], 0x0000);
+	ret = modvm_vcpu_get_regs(ctx->vcpus[0], MODVM_REG_CLASS_X86_SREGS,
+				  &sregs, sizeof(sregs));
+	if (ret < 0)
+		return ret;
+
+	sregs.cs.selector = 0x0000;
+	sregs.cs.base = 0x00000000;
+
+	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_CLASS_X86_SREGS,
+				  &sregs, sizeof(sregs));
+	if (ret < 0)
+		return ret;
+
+	memset(&regs, 0, sizeof(regs));
+	regs.rip = 0x0000;
+	regs.rflags = 0x02;
+
+	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_CLASS_X86_GPR, &regs,
+				  sizeof(regs));
 	if (ret < 0)
 		return ret;
 
@@ -150,7 +170,8 @@ static void test_machine_lifecycle(void)
 		.ram_base = 0x0000,
 		.ram_size = 4096,
 		.nr_vcpus = 1,
-		.firmware_path = NULL,
+		.loader_name = NULL,
+		.loader_opts = NULL,
 		.board = &mock_board,
 		.console = console,
 	};
@@ -175,7 +196,7 @@ static void test_machine_lifecycle(void)
 int main(void)
 {
 	modvm_log_initialize();
-	pr_info("Initiating ModVM machine integration test\n");
+	pr_info("Initiating ModVM board integration test\n");
 	test_machine_lifecycle();
 	pr_info("SUCCESS: machine architecture test concluded gracefully\n");
 	modvm_log_destroy();

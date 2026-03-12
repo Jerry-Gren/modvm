@@ -33,21 +33,23 @@ struct modvm_event_loop {
 };
 
 /**
- * struct modvm_config - user supplied virtual machine parameters
- * @accel_name: string identifier of the requested hypervisor backend
- * @ram_base: guest physical address where primary memory starts
- * @ram_size: total guest physical memory in bytes
- * @nr_vcpus: number of virtual processors to instantiate
- * @firmware_path: host filesystem path to the guest firmware
- * @board: pointer to the selected motherboard blueprint
- * @console: host character device mapped to the primary console
+ * struct modvm_config - immutable global configuration for the virtual machine
+ * @accel_name: hardware acceleration backend requested
+ * @ram_base: starting physical address of system memory
+ * @ram_size: total capacity of system memory in bytes
+ * @nr_vcpus: number of virtual processors to allocate
+ * @loader_name: boot protocol plugin identifier (e.g., "linux-x86", "raw-x86")
+ * @loader_opts: protocol-specific configuration string (e.g., "kernel=/boot/vmlinuz")
+ * @board: selected motherboard topology blueprint
+ * @console: character device backend for the primary system console
  */
 struct modvm_config {
 	const char *accel_name;
 	uint64_t ram_base;
 	size_t ram_size;
 	unsigned int nr_vcpus;
-	const char *firmware_path;
+	const char *loader_name;
+	const char *loader_opts;
 	const struct modvm_board *board;
 	struct modvm_chardev *console;
 };
