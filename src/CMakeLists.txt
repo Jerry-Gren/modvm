@@ -12,11 +12,11 @@ file(GLOB HW_SOURCES CONFIGURE_DEPENDS "hw/*/*.c")
 # Utilizes ${MODVM_OS} (e.g., linux) and ${MODVM_ARCH} (e.g., x86_64) 
 # detected in the top-level CMakeLists.
 file(GLOB OS_SOURCES CONFIGURE_DEPENDS "os/posix/*.c") 
-file(GLOB ARCH_SOURCES CONFIGURE_DEPENDS "motherboard/${MODVM_ARCH}/*.c")
+file(GLOB BOARD_SOURCES CONFIGURE_DEPENDS "hw/boards/${MODVM_ARCH}/*.c")
 
 # Discover Hypervisor-specific sources (currently focusing on KVM)
-file(GLOB HYPERVISOR_SOURCES CONFIGURE_DEPENDS "hypervisor/kvm/*.c")
-file(GLOB HYPERVISOR_ARCH_SOURCES CONFIGURE_DEPENDS "hypervisor/kvm/${MODVM_ARCH}/*.c")
+file(GLOB ACCEL_SOURCES CONFIGURE_DEPENDS "accel/kvm/*.c")
+file(GLOB ACCEL_ARCH_SOURCES CONFIGURE_DEPENDS "accel/kvm/${MODVM_ARCH}/*.c")
 
 # Build an OBJECT library
 # Using an OBJECT library allows us to compile these files into object files 
@@ -27,9 +27,9 @@ add_library(modvm_core OBJECT
     ${BACKEND_SOURCES}
     ${HW_SOURCES}
     ${OS_SOURCES}
-    ${ARCH_SOURCES}
-    ${HYPERVISOR_SOURCES}
-    ${HYPERVISOR_ARCH_SOURCES}
+    ${BOARD_SOURCES}
+    ${ACCEL_SOURCES}
+    ${ACCEL_ARCH_SOURCES}
 )
 
 # Export public header directories

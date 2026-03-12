@@ -8,33 +8,30 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/err.h>
+#include <modvm/utils/compiler.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "memory: " fmt
 
 /**
- * vm_mem_space_init - initialize a fresh physical memory controller.
- * @space: the memory space context to initialize.
- * @map_cb: function to invoke when a new memory region needs hardware mapping.
- * @data: private context data passed to the map_cb.
+ * modvm_mem_space_init - initialize a fresh physical memory controller
+ * @space: the memory space context to initialize
+ * @map_cb: function invoked when a new memory region needs hardware mapping
+ * @data: private context data passed to the map_cb
  *
- * return: 0 on success, or a negative error code on invalid arguments.
+ * Return: 0 on success, or a negative error code.
  */
-int vm_mem_space_init(struct vm_mem_space *space, vm_mem_map_cb_t map_cb,
-		      void *data)
+int modvm_mem_space_init(struct modvm_mem_space *space,
+			 modvm_mem_map_cb_t map_cb, void *data)
 {
 	if (WARN_ON(!space))
 		return -EINVAL;
 
 	INIT_LIST_HEAD(&space->regions);
 	space->total_ram = 0;
-
 	space->host_page_size = os_page_size();
 	space->map_cb = map_cb;
 	space->map_data = data;
-
-	pr_debug("initialized memory space, host page size: %zu bytes\n",
-		 space->host_page_size);
 
 	return 0;
 }
@@ -46,37 +43,36 @@ static bool is_overlap(uint64_t base1, size_t size1, uint64_t base2,
 }
 
 /**
- * vm_mem_region_add - register a contiguous physical memory bank.
- * @space: the memory space to attach this region to.
- * @gpa: the starting address as seen by the virtual processor.
- * @size: total capacity of the memory bank in bytes.
- * @flags: bitmask governing read/write/execute permissions.
+ * modvm_mem_region_add - map a contiguous host memory block to guest physics
+ * @space: the memory space to attach this region to
+ * @gpa: the starting physical address requested by the guest
+ * @size: capacity of the memory bank in bytes
+ * @flags: bitmask governing read/write/execute permissions
  *
- * Allocates host backing memory and registers the mapping with the
- * architecture-specific hypervisor backend. Ensures no address overlap
- * occurs within the existing topology.
+ * Validates alignment and topological overlap before allocating OS-level
+ * page-aligned anonymous memory and invoking the hypervisor mapping hook.
  *
- * return: 0 on success, negative error code on overlap or failure.
+ * Return: 0 on success, negative error code on conflict or exhaustion.
  */
-int vm_mem_region_add(struct vm_mem_space *space, uint64_t gpa, size_t size,
-		      uint32_t flags)
+int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
+			 size_t size, uint32_t flags)
 {
-	struct vm_mem_region *reg;
-	struct vm_mem_region *pos;
+	struct modvm_mem_region *reg;
+	struct modvm_mem_region *pos;
 	int ret;
 
 	if (WARN_ON(!space || size == 0))
 		return -EINVAL;
 
-	if (WARN_ON(UINT64_MAX - gpa < size)) {
-		pr_err("memory region 0x%lx + size 0x%zx wraps around\n", gpa,
-		       size);
+	if (unlikely(UINT64_MAX - gpa < size)) {
+		pr_err("memory region 0x%lx + size 0x%zx wraps around address limit\n",
+		       gpa, size);
 		return -EOVERFLOW;
 	}
 
-	if (WARN_ON(gpa % space->host_page_size != 0 ||
-		    size % space->host_page_size != 0)) {
-		pr_err("region (gpa 0x%lx, size 0x%zx) not aligned to %zu bytes\n",
+	if (unlikely(gpa % space->host_page_size != 0 ||
+		     size % space->host_page_size != 0)) {
+		pr_err("region (gpa 0x%lx, size 0x%zx) strictly requires %zu bytes alignment\n",
 		       gpa, size, space->host_page_size);
 		return -EINVAL;
 	}
@@ -84,34 +80,39 @@ int vm_mem_region_add(struct vm_mem_space *space, uint64_t gpa, size_t size,
 	list_for_each_entry(pos, &space->regions, node)
 	{
 		if (is_overlap(gpa, size, pos->gpa, pos->size)) {
-			pr_err("overlap detected at gpa 0x%lx\n", gpa);
+			pr_err("topology overlap detected at gpa 0x%lx\n", gpa);
 			return -EBUSY;
 		}
 	}
 
 	reg = calloc(1, sizeof(*reg));
-	if (!reg)
+	if (unlikely(!reg))
 		return -ENOMEM;
 
 	reg->hva = os_page_alloc(size);
-	if (IS_ERR(reg->hva)) {
+	if (unlikely(IS_ERR(reg->hva))) {
 		ret = PTR_ERR(reg->hva);
-		pr_err("failed to allocate backing memory for gpa 0x%lx\n",
+		pr_err("failed to allocate host backing memory for gpa 0x%lx\n",
 		       gpa);
 		free(reg);
 		return ret;
 	}
 
-	memset(reg->hva, 0, size);
+	/* 
+	 * Don't do this :)
+	 * We rely on lazy allocation
+	 * 
+	 * memset(reg->hva, 0, size);
+	 */
 
 	reg->gpa = gpa;
 	reg->size = size;
 	reg->flags = flags;
 
-	if (space->map_cb) {
+	if (likely(space->map_cb)) {
 		ret = space->map_cb(space, reg, space->map_data);
-		if (ret != 0) {
-			pr_err("hypervisor backend failed to map gpa 0x%lx\n",
+		if (unlikely(ret != 0)) {
+			pr_err("hypervisor backend actively rejected mapping for gpa 0x%lx\n",
 			       gpa);
 			os_page_free(reg->hva, reg->size);
 			free(reg);
@@ -122,25 +123,28 @@ int vm_mem_region_add(struct vm_mem_space *space, uint64_t gpa, size_t size,
 	list_add_tail(&reg->node, &space->regions);
 	space->total_ram += size;
 
-	pr_info("registered memory region: 0x%08lx - 0x%08lx (%zu MB)\n", gpa,
-		gpa + size - 1, size / (1024 * 1024));
+	pr_debug("mounted hardware ram: 0x%08lx - 0x%08lx (%zu MB)\n", gpa,
+		 gpa + size - 1, size / (1024 * 1024));
 
 	return 0;
 }
 
 /**
- * vm_mem_gpa_to_hva - resolve a guest physical address.
- * @space: the memory space containing the topology.
- * @gpa: the absolute physical address requested by the guest.
+ * modvm_mem_gpa_to_hva - resolve a guest physical address
+ * @space: the memory space containing the topology
+ * @gpa: the absolute physical address requested
  *
- * Performs a software page-walk of the registered memory regions.
+ * Traverses the topology to translate guest physical coordinates into
+ * host virtual pointers for direct memory payload manipulation.
  *
- * return: the corresponding host virtual address pointer, or NULL if
- * unmapped.
+ * Return: host virtual address pointer, or NULL if out of bounds.
  */
-void *vm_mem_gpa_to_hva(struct vm_mem_space *space, uint64_t gpa)
+void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, uint64_t gpa)
 {
-	struct vm_mem_region *pos;
+	struct modvm_mem_region *pos;
+
+	if (WARN_ON(!space))
+		return NULL;
 
 	list_for_each_entry(pos, &space->regions, node)
 	{
@@ -154,14 +158,14 @@ void *vm_mem_gpa_to_hva(struct vm_mem_space *space, uint64_t gpa)
 }
 
 /**
- * vm_mem_space_destroy - tear down the memory controller and free RAM.
- * @space: the memory space to destroy.
+ * modvm_mem_space_destroy - dismantle the physical memory controller
+ * @space: the memory space to destroy
  */
-void vm_mem_space_destroy(struct vm_mem_space *space)
+void modvm_mem_space_destroy(struct modvm_mem_space *space)
 {
-	struct vm_mem_region *pos, *n;
+	struct modvm_mem_region *pos, *n;
 
-	if (!space)
+	if (WARN_ON(!space))
 		return;
 
 	list_for_each_entry_safe(pos, n, &space->regions, node)

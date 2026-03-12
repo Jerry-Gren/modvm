@@ -1,29 +1,29 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef MODVM_CORE_EVENT_LOOP_H
-#define MODVM_CORE_EVENT_LOOP_H
+#ifndef MODVM_OS_EVENT_LOOP_H
+#define MODVM_OS_EVENT_LOOP_H
 
 #include <stdint.h>
 #include <stdbool.h>
 
-#include <modvm/core/machine.h>
+struct modvm_ctx;
 
-#define VM_EVENT_READ (1U << 0)
-#define VM_EVENT_WRITE (1U << 1)
-#define VM_EVENT_ERROR (1U << 2)
+#define MODVM_EVENT_READ (1U << 0)
+#define MODVM_EVENT_WRITE (1U << 1)
+#define MODVM_EVENT_ERROR (1U << 2)
 
 /**
- * typedef vm_event_cb_t - Handler invoked when a file descriptor is ready.
- * @fd: The host file descriptor that triggered the event.
- * @events: Bitmask of triggered events.
- * @data: Pointer to contextual data provided during registration.
+ * typedef modvm_event_cb_t - handler invoked when a file descriptor is ready
+ * @fd: the host file descriptor that triggered the event
+ * @events: bitmask of triggered events
+ * @data: pointer to contextual closure data
  */
-typedef void (*vm_event_cb_t)(int fd, uint32_t events, void *data);
+typedef void (*modvm_event_cb_t)(int fd, uint32_t events, void *data);
 
-int vm_event_loop_init(struct vm_machine *machine);
-int vm_event_loop_add_fd(struct vm_machine *machine, int fd, uint32_t events,
-			 vm_event_cb_t cb, void *data);
-void vm_event_loop_rm_fd(struct vm_machine *machine, int fd);
-int vm_event_loop_run(struct vm_machine *machine);
-void vm_event_loop_stop(struct vm_machine *machine);
+int modvm_event_loop_init(struct modvm_ctx *ctx);
+int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events,
+			    modvm_event_cb_t cb, void *data);
+void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd);
+int modvm_event_loop_run(struct modvm_ctx *ctx);
+void modvm_event_loop_stop(struct modvm_ctx *ctx);
 
-#endif /* MODVM_CORE_EVENT_LOOP_H */
+#endif /* MODVM_OS_EVENT_LOOP_H */

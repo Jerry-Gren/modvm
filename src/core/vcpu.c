@@ -3,38 +3,39 @@
 
 #include <modvm/core/vcpu.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/compiler.h>
 
 /**
- * vm_vcpu_init - allocate and map a virtual processor.
- * @vcpu: the vcpu structure to populate.
- * @hv: the parent hypervisor container.
- * @id: sequential index or architectural ID.
+ * modvm_vcpu_init - allocate and map a virtual processor
+ * @vcpu: the vcpu structure to populate
+ * @accel: the parent acceleration container
+ * @id: sequential architectural ID
  *
- * return: 0 on success, or a negative error code.
+ * Return: 0 on success, or a negative error code.
  */
-int vm_vcpu_init(struct vm_vcpu *vcpu, struct vm_hypervisor *hv, int id)
+int modvm_vcpu_init(struct modvm_vcpu *vcpu, struct modvm_accel *accel, int id)
 {
-	if (WARN_ON(!vcpu || !hv || !hv->cls))
+	if (WARN_ON(!vcpu || !accel || !accel->backend))
 		return -EINVAL;
 
 	vcpu->id = id;
-	vcpu->hv = hv;
-	vcpu->ops = hv->cls->vcpu_ops;
+	vcpu->accel = accel;
+	vcpu->ops = accel->backend->vcpu_ops;
 
-	if (!vcpu->ops || !vcpu->ops->init)
+	if (WARN_ON(!vcpu->ops || !vcpu->ops->init))
 		return -ENOTSUP;
 
 	return vcpu->ops->init(vcpu);
 }
 
 /**
- * vm_vcpu_set_pc - configure the CPU reset vector.
- * @vcpu: the virtual processor.
- * @pc: the physical address to begin execution.
+ * modvm_vcpu_set_pc - configure the CPU instruction pointer
+ * @vcpu: the virtual processor
+ * @pc: the physical address to begin execution
  *
- * return: 0 on success, or a negative error code.
+ * Return: 0 on success, or a negative error code.
  */
-int vm_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
+int modvm_vcpu_set_pc(struct modvm_vcpu *vcpu, uint64_t pc)
 {
 	if (WARN_ON(!vcpu || !vcpu->ops))
 		return -EINVAL;
@@ -46,12 +47,12 @@ int vm_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
 }
 
 /**
- * vm_vcpu_run - enter the execution loop of the processor.
- * @vcpu: the virtual processor to run.
+ * modvm_vcpu_run - transition into the hardware execution loop
+ * @vcpu: the virtual processor to run
  *
- * return: 0 on graceful exit, or a negative error code.
+ * Return: 0 on graceful guest exit, or a negative error code.
  */
-int vm_vcpu_run(struct vm_vcpu *vcpu)
+int modvm_vcpu_run(struct modvm_vcpu *vcpu)
 {
 	if (WARN_ON(!vcpu || !vcpu->ops))
 		return -EINVAL;
@@ -63,12 +64,12 @@ int vm_vcpu_run(struct vm_vcpu *vcpu)
 }
 
 /**
- * vm_vcpu_destroy - safely tear down virtual processor resources.
- * @vcpu: the virtual processor to destroy.
+ * modvm_vcpu_destroy - safely release hardware processor resources
+ * @vcpu: the virtual processor to destroy
  */
-void vm_vcpu_destroy(struct vm_vcpu *vcpu)
+void modvm_vcpu_destroy(struct modvm_vcpu *vcpu)
 {
-	if (!vcpu || !vcpu->ops)
+	if (WARN_ON(!vcpu || !vcpu->ops))
 		return;
 
 	if (vcpu->ops->destroy)

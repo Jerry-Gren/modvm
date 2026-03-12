@@ -10,10 +10,11 @@
 
 #include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
-#include <modvm/core/machine.h>
+#include <modvm/core/modvm.h>
 #include <modvm/utils/log.h>
 #include <modvm/os/thread.h>
 #include <modvm/utils/container_of.h>
+#include <modvm/utils/compiler.h>
 
 #include "internal.h"
 
@@ -21,17 +22,15 @@
 #define pr_fmt(fmt) "kvm_vcpu: " fmt
 
 /**
- * kvm_vcpu_init - request a hardware virtual processor from KVM.
- * @vcpu: the core vcpu structure to populate.
- * @hv: the parent hypervisor container.
- * @id: sequential index or APIC ID/MPIDR.
+ * kvm_vcpu_init - request a hardware virtual processor from the host kernel
+ * @vcpu: the core vcpu structure to populate
  *
- * return: 0 on success, or a negative error code.
+ * Return: 0 on success, or a negative error code.
  */
-static int kvm_vcpu_init(struct vm_vcpu *vcpu)
+static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 {
-	struct kvm_vcpu_state *vcpu_state;
-	struct kvm_state *state = vcpu->hv->priv;
+	struct modvm_kvm_vcpu_state *vcpu_state;
+	struct modvm_kvm_state *state = vcpu->accel->priv;
 	int ret;
 
 	vcpu_state = calloc(1, sizeof(*vcpu_state));
@@ -86,26 +85,24 @@ err_free_state:
 	return ret;
 }
 
-/**
- * kvm_vcpu_set_pc_wrap - configure the CPU reset vector.
- * @vcpu: the virtual processor.
- * @pc: the physical address to begin execution.
- *
- * return: 0 on success, or a negative error code.
- */
-static int kvm_vcpu_set_pc_wrap(struct vm_vcpu *vcpu, uint64_t pc)
+static int kvm_vcpu_set_pc_wrap(struct modvm_vcpu *vcpu, uint64_t pc)
 {
-	return kvm_arch_vcpu_set_pc(vcpu, pc);
+	return modvm_kvm_arch_vcpu_set_pc(vcpu, pc);
 }
 
-static void handle_mmio_exit(struct vm_vcpu *vcpu)
+/**
+ * handle_mmio_exit - route memory-mapped IO traps to the system bus
+ * @vcpu: the trapped virtual processor
+ *
+ * This is a hot path execution flow. It extracts the payload from the KVM
+ * shared memory window and dispatches it into the emulator's device tree.
+ */
+static void handle_mmio_exit(struct modvm_vcpu *vcpu)
 {
-	struct kvm_vcpu_state *state = vcpu->priv;
+	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 	struct kvm_run *run = state->run;
-
-	/* Derive the machine context from the hypervisor pointer */
-	struct vm_machine *machine =
-		container_of(vcpu->hv, struct vm_machine, hv);
+	struct modvm_ctx *ctx =
+		container_of(vcpu->accel, struct modvm_ctx, accel);
 
 	uint64_t gpa = run->mmio.phys_addr;
 	uint8_t size = run->mmio.len;
@@ -114,19 +111,16 @@ static void handle_mmio_exit(struct vm_vcpu *vcpu)
 
 	if (run->mmio.is_write) {
 		memcpy(&val, data, size);
-		/* Inject machine context into the dispatch call */
-		vm_bus_dispatch_write(machine, VM_BUS_MMIO, gpa, val, size);
+		modvm_bus_dispatch_write(ctx, MODVM_BUS_MMIO, gpa, val, size);
 	} else {
-		/* Inject machine context into the dispatch call */
-		val = vm_bus_dispatch_read(machine, VM_BUS_MMIO, gpa, size);
+		val = modvm_bus_dispatch_read(ctx, MODVM_BUS_MMIO, gpa, size);
 		memcpy(data, &val, size);
 	}
 }
 
-static int setup_kvm_sigmask(struct kvm_vcpu_state *state)
+static int setup_kvm_sigmask(struct modvm_kvm_vcpu_state *state)
 {
 	struct kvm_signal_mask *kvm_mask;
-	/* Linux kernel expects exactly an 8-byte signal mask */
 	const uint32_t KERNEL_SIGSET_SIZE = 8;
 	int ret;
 
@@ -155,21 +149,22 @@ static int setup_kvm_sigmask(struct kvm_vcpu_state *state)
 }
 
 /**
- * kvm_vcpu_run - the execution loop of the processor.
- * @vcpu: the virtual processor to run.
+ * kvm_vcpu_run - enter the execution loop of the hardware processor
+ * @vcpu: the virtual processor to run
  *
- * Traps into hardware virtualization. Yields control back to host
- * userspace only on exceptions or device I/O.
+ * The critical hot path of the hypervisor. Relinquishes CPU time to the
+ * guest operating system and only returns to userspace upon encountering
+ * unhandled hardware traps (VMEXITs).
  *
- * return: 0 on graceful exit, or a negative error code.
+ * Return: 0 on graceful exit, or a negative error code.
  */
-static int kvm_vcpu_run(struct vm_vcpu *vcpu)
+static int kvm_vcpu_run(struct modvm_vcpu *vcpu)
 {
-	struct kvm_vcpu_state *state = vcpu->priv;
+	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 	struct kvm_run *run = state->run;
 	int ret;
 
-	pr_info("vcpu %d entering hypervisor loop\n", vcpu->id);
+	pr_info("vcpu %d transitioning into hardware execution\n", vcpu->id);
 
 	os_thread_block_wakeup();
 
@@ -177,22 +172,19 @@ static int kvm_vcpu_run(struct vm_vcpu *vcpu)
 	if (ret < 0)
 		return ret;
 
-	/*
-	 * Wait for the primary thread to finish spawning all siblings.
-	 */
-	os_mutex_lock(vcpu->hv->init_mutex);
-	os_mutex_unlock(vcpu->hv->init_mutex);
+	os_mutex_lock(vcpu->accel->init_mutex);
+	os_mutex_unlock(vcpu->accel->init_mutex);
 
 	for (;;) {
-		if (!atomic_load(&vcpu->hv->is_running))
+		if (unlikely(!atomic_load(&vcpu->accel->is_running)))
 			return 0;
 
 		ret = ioctl(state->vcpu_fd, KVM_RUN, 0);
-		if (ret < 0) {
-			if (errno == EINTR || errno == EAGAIN)
+		if (unlikely(ret < 0)) {
+			if (likely(errno == EINTR || errno == EAGAIN))
 				continue;
 
-			pr_err("ioctl KVM_RUN failed: %d\n", errno);
+			pr_err("KVM_RUN ioctl critically failed: %d\n", errno);
 			return -errno;
 		}
 
@@ -202,18 +194,18 @@ static int kvm_vcpu_run(struct vm_vcpu *vcpu)
 			break;
 
 		case KVM_EXIT_HLT:
-			pr_info("vcpu %d halted by guest OS\n", vcpu->id);
+			pr_info("vcpu %d received halt instruction\n",
+				vcpu->id);
 			return 0;
 
 		case KVM_EXIT_INTERNAL_ERROR:
-			pr_err("hypervisor internal error, suberror: %d\n",
+			pr_err("hypervisor internal error, suberror code: %d\n",
 			       run->internal.suberror);
 			return -EFAULT;
 
 		default:
-			/* Delegate architecture-specific exits (like PIO) to the arch hook */
-			ret = kvm_arch_vcpu_handle_exit(vcpu, run);
-			if (ret < 0)
+			ret = modvm_kvm_arch_vcpu_handle_exit(vcpu, run);
+			if (unlikely(ret < 0))
 				return ret;
 			break;
 		}
@@ -221,20 +213,19 @@ static int kvm_vcpu_run(struct vm_vcpu *vcpu)
 }
 
 /**
- * kvm_vcpu_destroy - safely tear down virtual processor resources.
- * @vcpu: the virtual processor to destroy.
+ * kvm_vcpu_destroy - safely unmap and release hardware vCPU allocations
+ * @vcpu: the virtual processor to destroy
  */
-static void kvm_vcpu_destroy(struct vm_vcpu *vcpu)
+static void kvm_vcpu_destroy(struct modvm_vcpu *vcpu)
 {
-	struct kvm_vcpu_state *state = vcpu->priv;
+	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 
 	munmap(state->run, state->run_size);
 	close(state->vcpu_fd);
-
 	free(state);
 }
 
-const struct vm_vcpu_ops kvm_vcpu_ops = {
+const struct modvm_vcpu_ops modvm_kvm_vcpu_ops = {
 	.init = kvm_vcpu_init,
 	.destroy = kvm_vcpu_destroy,
 	.set_pc = kvm_vcpu_set_pc_wrap,

@@ -6,20 +6,24 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/compiler.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "loader: " fmt
 
 /**
- * vm_loader_load_raw - load a flat binary file into guest memory.
- * @space: the memory space to map the image into.
- * @path: host filesystem path to the binary image.
- * @gpa: guest physical address where the image should be loaded.
+ * modvm_loader_load_raw - stream a binary payload into guest memory
+ * @space: the target physical memory space
+ * @path: host filesystem path to the payload
+ * @gpa: destination physical address for the payload
  *
- * return: 0 on success, or a negative error code.
+ * Resolves the physical address into the host's virtual address space
+ * and performs a direct stream read, bypassing typical bootloaders.
+ *
+ * Return: 0 on success, or a negative error code.
  */
-int vm_loader_load_raw(struct vm_mem_space *space, const char *path,
-		       uint64_t gpa)
+int modvm_loader_load_raw(struct modvm_mem_space *space, const char *path,
+			  uint64_t gpa)
 {
 	FILE *fp;
 	long size;
@@ -30,52 +34,43 @@ int vm_loader_load_raw(struct vm_mem_space *space, const char *path,
 		return -EINVAL;
 
 	fp = fopen(path, "rb");
-	if (!fp) {
-		pr_err("failed to open image file: %s (errno: %d)\n", path,
+	if (unlikely(!fp)) {
+		pr_err("failed to acquire image handle: %s (errno: %d)\n", path,
 		       errno);
 		return -ENOENT;
 	}
 
-	if (fseek(fp, 0, SEEK_END) < 0) {
+	if (unlikely(fseek(fp, 0, SEEK_END) < 0)) {
 		fclose(fp);
 		return -EIO;
 	}
 
 	size = ftell(fp);
-	if (size <= 0) {
-		pr_err("invalid or empty image file: %s\n", path);
+	if (unlikely(size <= 0)) {
+		pr_err("payload image rejected due to zero or negative length: %s\n",
+		       path);
 		fclose(fp);
 		return -EINVAL;
 	}
 
 	rewind(fp);
 
-	/*
-	 * Translate the target guest physical address to the host virtual address.
-	 * This resolves exactly where in our host process memory we need to
-	 * write the file payload so the virtual processor can access it.
-	 */
-	hva = vm_mem_gpa_to_hva(space, gpa);
-	if (IS_ERR_OR_NULL(hva)) {
-		pr_err("failed to translate gpa 0x%lx for image loading\n",
-		       gpa);
+	hva = modvm_mem_gpa_to_hva(space, gpa);
+	if (unlikely(IS_ERR_OR_NULL(hva))) {
+		pr_err("address translation trap: unmapped gpa 0x%lx\n", gpa);
 		fclose(fp);
 		return -EFAULT;
 	}
 
-	/*
-	 * Stream the file directly from the host filesystem into the
-	 * virtual machine's physical memory backend.
-	 */
 	read_len = fread(hva, 1, (size_t)size, fp);
-	if (read_len != (size_t)size) {
-		pr_err("short read while loading image: expected %ld, got %zu\n",
+	if (unlikely(read_len != (size_t)size)) {
+		pr_err("short stream read: expected %ld bytes, acquired %zu\n",
 		       size, read_len);
 		fclose(fp);
 		return -EIO;
 	}
 
-	pr_info("successfully loaded %zu bytes from '%s' to gpa 0x%08lx\n",
+	pr_info("successfully streamed %zu bytes from '%s' to gpa 0x%08lx\n",
 		read_len, path, gpa);
 
 	fclose(fp);

@@ -5,7 +5,7 @@
 #include <errno.h>
 
 #include <modvm/core/bus.h>
-#include <modvm/core/devres.h>
+#include <modvm/core/devm.h>
 #include <modvm/hw/serial_reg.h>
 #include <modvm/hw/serial.h>
 #include <modvm/utils/compiler.h>
@@ -17,7 +17,7 @@
 #define pr_fmt(fmt) "uart_16550a: " fmt
 
 /**
- * struct uart_ctx - internal state machine for the 16550a uart
+ * struct uart_16550a_ctx - internal state machine for the 16550a uart
  * @lock: mutex to serialize access from multiple executing processors
  * @irq: hardware interrupt line connection to the system board
  * @console: host character device handling the stream presentation
@@ -34,39 +34,41 @@
  * @rbr: emulated incoming data latch
  * @thre_int_pending: internal flip-flop for edge-triggered thre interrupts
  */
-struct uart_ctx {
+struct uart_16550a_ctx {
 	struct os_mutex *lock;
-	struct vm_irq *irq;
-	struct vm_chardev *console;
+	struct modvm_irq *irq;
+	struct modvm_chardev *console;
 
-	uint8_t dll;
-	uint8_t dlm;
-	uint8_t ier;
-	uint8_t fcr;
-	uint8_t lcr;
-	uint8_t mcr;
-	uint8_t lsr;
-	uint8_t msr;
-	uint8_t scr;
+	uint8_t dll __guarded_by(lock);
+	uint8_t dlm __guarded_by(lock);
+	uint8_t ier __guarded_by(lock);
+	uint8_t fcr __guarded_by(lock);
+	uint8_t lcr __guarded_by(lock);
+	uint8_t mcr __guarded_by(lock);
+	uint8_t lsr __guarded_by(lock);
+	uint8_t msr __guarded_by(lock);
+	uint8_t scr __guarded_by(lock);
 
-	uint8_t thr;
-	uint8_t rbr;
+	uint8_t thr __guarded_by(lock);
+	uint8_t rbr __guarded_by(lock);
 
-	bool thre_int_pending;
+	bool thre_int_pending __guarded_by(lock);
 };
 
-static inline bool uart_is_dlab_set(struct uart_ctx *ctx)
+static inline bool uart_is_dlab_set(struct uart_16550a_ctx *ctx)
+	__must_hold(ctx->lock)
 {
 	return (ctx->lcr & UART_LCR_DLAB) != 0;
 }
 
-static inline bool uart_is_loopback(struct uart_ctx *ctx)
+static inline bool uart_is_loopback(struct uart_16550a_ctx *ctx)
+	__must_hold(ctx->lock)
 {
 	/* According to 8.6.7, MCR bit 4 enables local loopback feature */
 	return (ctx->mcr & UART_MCR_LOOP) != 0;
 }
 
-static uint8_t uart_get_iir(struct uart_ctx *ctx)
+static uint8_t uart_get_iir(struct uart_16550a_ctx *ctx) __must_hold(ctx->lock)
 {
 	/*
          * Bits 6 and 7 are set to 1 if FIFOs are enabled.
@@ -109,7 +111,7 @@ static uint8_t uart_get_iir(struct uart_ctx *ctx)
 	return iir;
 }
 
-static void uart_update_irq(struct uart_ctx *ctx)
+static void uart_update_irq(struct uart_16550a_ctx *ctx) __must_hold(ctx->lock)
 {
 	uint8_t iir = uart_get_iir(ctx);
 
@@ -119,10 +121,10 @@ static void uart_update_irq(struct uart_ctx *ctx)
          */
 	int level = (iir & UART_IIR_NO_INT) ? 0 : 1;
 
-	vm_irq_set_level(ctx->irq, level);
+	modvm_irq_set_level(ctx->irq, level);
 }
 
-static void uart_update_msr(struct uart_ctx *ctx)
+static void uart_update_msr(struct uart_16550a_ctx *ctx) __must_hold(ctx->lock)
 {
 	uint8_t old_msr = ctx->msr;
 	uint8_t new_msr = 0;
@@ -168,13 +170,14 @@ static void uart_update_msr(struct uart_ctx *ctx)
 	ctx->msr = new_msr | (old_msr & UART_MSR_ANY_DELTA) | delta;
 }
 
-static uint8_t uart_read_reg(struct uart_ctx *ctx, uint16_t offset)
+static uint8_t uart_read_reg(struct uart_16550a_ctx *ctx, uint16_t offset)
+	__must_hold(ctx->lock)
 {
 	uint8_t val = 0;
 
 	switch (offset) {
 	case UART_RX:
-		if (uart_is_dlab_set(ctx))
+		if (unlikely(uart_is_dlab_set(ctx)))
 			return ctx->dll;
 
 		val = ctx->rbr;
@@ -186,7 +189,7 @@ static uint8_t uart_read_reg(struct uart_ctx *ctx, uint16_t offset)
 		return val;
 
 	case UART_IER:
-		if (uart_is_dlab_set(ctx))
+		if (unlikely(uart_is_dlab_set(ctx)))
 			return ctx->dlm;
 		return ctx->ier;
 
@@ -226,23 +229,25 @@ static uint8_t uart_read_reg(struct uart_ctx *ctx, uint16_t offset)
 		return ctx->scr;
 
 	default:
-		pr_warn_once("read from unknown offset: 0x%x\n", offset);
+		pr_warn_once("read from undefined peripheral offset: 0x%x\n",
+			     offset);
 		return 0xff;
 	}
 }
 
-static void uart_write_reg(struct uart_ctx *ctx, uint16_t offset, uint8_t val)
+static void uart_write_reg(struct uart_16550a_ctx *ctx, uint16_t offset,
+			   uint8_t val) __must_hold(ctx->lock)
 {
 	uint8_t old_ier;
 
 	switch (offset) {
 	case UART_TX:
-		if (uart_is_dlab_set(ctx)) {
+		if (unlikely(uart_is_dlab_set(ctx))) {
 			ctx->dll = val;
 			return;
 		}
 
-		if (uart_is_loopback(ctx)) {
+		if (unlikely(uart_is_loopback(ctx))) {
 			/*
 			 * In loopback mode, transmitted data is immediately
 			 * received in the Receive Buffer Register, and Data Ready
@@ -259,7 +264,7 @@ static void uart_write_reg(struct uart_ctx *ctx, uint16_t offset, uint8_t val)
 			 * Dispatch the payload to the attached host backend.
 			 * The frontend hardware does not care how the backend processes it.
 			 */
-			if (ctx->console && ctx->console->ops->write)
+			if (likely(ctx->console && ctx->console->ops->write))
 				ctx->console->ops->write(ctx->console, &val, 1);
 		}
 
@@ -276,7 +281,7 @@ static void uart_write_reg(struct uart_ctx *ctx, uint16_t offset, uint8_t val)
 		break;
 
 	case UART_IER: {
-		if (uart_is_dlab_set(ctx)) {
+		if (unlikely(uart_is_dlab_set(ctx))) {
 			ctx->dlm = val;
 			return;
 		}
@@ -319,7 +324,7 @@ static void uart_write_reg(struct uart_ctx *ctx, uint16_t offset, uint8_t val)
 	case UART_LCR:
 		ctx->lcr = val;
 		/* Emulate Break signal reflection in loopback mode */
-		if (uart_is_loopback(ctx)) {
+		if (unlikely(uart_is_loopback(ctx))) {
 			if (ctx->lcr & UART_LCR_SBC)
 				ctx->lsr |= UART_LSR_BI;
 			else
@@ -348,15 +353,16 @@ static void uart_write_reg(struct uart_ctx *ctx, uint16_t offset, uint8_t val)
 		break;
 
 	default:
-		pr_warn_once("write to unknown offset: 0x%x\n", offset);
+		pr_warn_once("write to undefined peripheral offset: 0x%x\n",
+			     offset);
 		break;
 	}
 }
 
-static uint64_t uart_bus_read(struct vm_device *dev, uint64_t addr,
+static uint64_t uart_bus_read(struct modvm_device *dev, uint64_t addr,
 			      uint8_t size)
 {
-	struct uart_ctx *ctx = dev->priv;
+	struct uart_16550a_ctx *ctx = dev->priv;
 	uint64_t ret = 0;
 	uint8_t i;
 
@@ -374,10 +380,10 @@ static uint64_t uart_bus_read(struct vm_device *dev, uint64_t addr,
 	return ret;
 }
 
-static void uart_bus_write(struct vm_device *dev, uint64_t addr, uint64_t val,
-			   uint8_t size)
+static void uart_bus_write(struct modvm_device *dev, uint64_t addr,
+			   uint64_t val, uint8_t size)
 {
-	struct uart_ctx *ctx = dev->priv;
+	struct uart_16550a_ctx *ctx = dev->priv;
 	uint8_t i;
 
 	os_mutex_lock(ctx->lock);
@@ -394,10 +400,10 @@ static void uart_bus_write(struct vm_device *dev, uint64_t addr, uint64_t val,
 
 static void uart_rx_cb(void *data, const uint8_t *buf, size_t len)
 {
-	struct uart_ctx *ctx = data;
+	struct uart_16550a_ctx *ctx = data;
 	size_t i;
 
-	if (len == 0)
+	if (unlikely(len == 0))
 		return;
 
 	os_mutex_lock(ctx->lock);
@@ -424,18 +430,17 @@ static void uart_rx_cb(void *data, const uint8_t *buf, size_t len)
 	os_mutex_unlock(ctx->lock);
 }
 
-static const struct vm_device_ops uart_ops = {
+static const struct modvm_device_ops uart_ops = {
 	.read = uart_bus_read,
 	.write = uart_bus_write,
 };
 
-static void uart_clear_rx_cb(void *data)
+static void uart_clear_rx_cb(struct modvm_device *dev)
 {
-	struct vm_device *dev = data;
-	struct uart_ctx *ctx = dev->priv;
+	struct uart_16550a_ctx *ctx = dev->priv;
 
 	if (ctx->console)
-		vm_chardev_set_rx_cb(ctx->console, dev->machine, NULL, NULL);
+		modvm_chardev_set_rx_cb(ctx->console, dev->ctx, NULL, NULL);
 }
 
 /**
@@ -445,13 +450,13 @@ static void uart_clear_rx_cb(void *data)
  *
  * return: 0 upon successful initialization, or a negative error code.
  */
-static int uart_instantiate(struct vm_device *dev, void *pdata)
+static int uart_instantiate(struct modvm_device *dev, void *pdata)
 {
-	struct uart_ctx *ctx;
-	struct serial_pdata *plat = pdata;
+	struct uart_16550a_ctx *ctx;
+	struct modvm_serial_pdata *plat = pdata;
 	int ret;
 
-	ctx = vm_devm_zalloc(dev, sizeof(*ctx));
+	ctx = modvm_devm_zalloc(dev, sizeof(*ctx));
 	if (!ctx)
 		return -ENOMEM;
 
@@ -462,8 +467,7 @@ static int uart_instantiate(struct vm_device *dev, void *pdata)
 	if (IS_ERR(ctx->lock))
 		return PTR_ERR(ctx->lock);
 
-	ret = vm_devm_add_action(dev, (void (*)(void *))os_mutex_destroy,
-				 ctx->lock);
+	ret = modvm_devm_add_action(dev, os_mutex_destroy, ctx->lock);
 	if (ret < 0) {
 		os_mutex_destroy(ctx->lock);
 		return ret;
@@ -473,9 +477,9 @@ static int uart_instantiate(struct vm_device *dev, void *pdata)
 	ctx->console = plat->console;
 
 	/* bind the hardware reception pin to the backend data stream */
-	vm_chardev_set_rx_cb(ctx->console, dev->machine, uart_rx_cb, ctx);
+	modvm_chardev_set_rx_cb(ctx->console, dev->ctx, uart_rx_cb, ctx);
 
-	ret = vm_devm_add_action(dev, uart_clear_rx_cb, dev);
+	ret = modvm_devm_add_action(dev, uart_clear_rx_cb, dev);
 	if (ret < 0)
 		return ret;
 
@@ -493,20 +497,21 @@ static int uart_instantiate(struct vm_device *dev, void *pdata)
 	ctx->msr &= ~UART_MSR_ANY_DELTA;
 
 	/* Claim the 8 contiguous I/O ports on the motherboard bus */
-	ret = vm_bus_register_region(VM_BUS_PIO, plat->base, 8, dev);
+	ret = modvm_bus_register_region(MODVM_BUS_PIO, plat->base, 8, dev);
 	if (ret < 0)
 		return ret;
 
-	pr_info("initialized serial terminal at port 0x%03lx\n", plat->base);
+	pr_info("initialized legacy serial terminal at hardware port 0x%03lx\n",
+		plat->base);
 	return 0;
 }
 
-static const struct vm_device_class uart_class = {
+static const struct modvm_device_class uart_class = {
 	.name = "uart-16550a",
 	.instantiate = uart_instantiate,
 };
 
 static void __attribute__((constructor)) register_uart_class(void)
 {
-	vm_device_class_register(&uart_class);
+	modvm_device_class_register(&uart_class);
 }

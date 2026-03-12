@@ -3,57 +3,49 @@
 #include <errno.h>
 
 #include <modvm/core/bus.h>
-#include <modvm/core/devres.h>
+#include <modvm/core/devm.h>
+#include <modvm/core/modvm.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/log.h>
+#include <modvm/utils/compiler.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "bus: " fmt
 
-/**
- * bus_region_release - automatically unregister a bus region upon device destruction.
- * @owner: the peripheral device owning the region.
- * @res: the resource payload containing the bus region.
- *
- * This callback is invoked by the devres framework. It safely detaches
- * the region from the global bus topology before the memory is freed.
- */
-static void bus_region_release(void *owner, void *res)
+static void bus_region_release(struct modvm_bus_region *reg)
 {
-	struct vm_bus_region *reg = res;
-
-	(void)owner;
 	list_del(&reg->node);
-	pr_debug("automatically unregistered region at 0x%lx\n", reg->base);
+	pr_debug("automatically unregistered bus region at 0x%lx\n", reg->base);
+	free(reg);
 }
 
 /**
- * vm_bus_register_region - map a device into the system address space.
- * @type: indicates whether this is PIO or MMIO.
- * @base: absolute starting address on the system bus.
- * @size: size of the claimed region in bytes.
- * @dev: the peripheral device owning this region.
+ * modvm_bus_register_region - map a device onto the system address space
+ * @type: indicates whether this is PIO or MMIO
+ * @base: absolute starting address on the system bus
+ * @size: size of the claimed region in bytes
+ * @dev: the peripheral device owning this region
  *
- * Scans the existing topology for overlapping regions to prevent
- * hardware resource collisions before registering the new mapping.
- * The mapping is tied to the device's lifecycle via devres.
+ * Scans the specific topology for overlapping regions to prevent hardware
+ * resource collisions. The mapping is strictly tied to the device lifecycle.
  *
- * return: 0 on success, or a negative error code.
+ * Return: 0 on success, or a negative error code.
  */
-int vm_bus_register_region(enum vm_bus_type type, uint64_t base, uint64_t size,
-			   struct vm_device *dev)
+int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
+			      uint64_t size, struct modvm_device *dev)
 {
-	struct vm_machine *machine;
-	struct vm_bus_region *reg;
-	struct vm_bus_region *pos;
+	struct modvm_ctx *ctx;
+	struct modvm_bus_region *reg;
+	struct modvm_bus_region *pos;
 	struct list_head *list;
+	int ret;
 
-	if (WARN_ON(!dev || !dev->machine || !dev->ops || size == 0))
+	if (WARN_ON(!dev || !dev->ctx || !dev->ops || size == 0))
 		return -EINVAL;
 
-	machine = dev->machine;
-	list = (type == VM_BUS_PIO) ? &machine->bus.pio_regions :
-				      &machine->bus.mmio_regions;
+	ctx = dev->ctx;
+	list = (type == MODVM_BUS_PIO) ? &ctx->bus.pio_regions :
+					 &ctx->bus.mmio_regions;
 
 	list_for_each_entry(pos, list, node)
 	{
@@ -63,8 +55,8 @@ int vm_bus_register_region(enum vm_bus_type type, uint64_t base, uint64_t size,
 		}
 	}
 
-	reg = vm_devres_alloc(bus_region_release, sizeof(*reg));
-	if (!reg)
+	reg = calloc(1, sizeof(*reg));
+	if (unlikely(!reg))
 		return -ENOMEM;
 
 	reg->dev = dev;
@@ -73,40 +65,54 @@ int vm_bus_register_region(enum vm_bus_type type, uint64_t base, uint64_t size,
 	reg->type = type;
 
 	list_add_tail(&reg->node, list);
-	vm_devres_add(dev, reg);
+
+	ret = modvm_devm_add_action(dev, bus_region_release, reg);
+	if (unlikely(ret < 0)) {
+		list_del(&reg->node);
+		free(reg);
+		return ret;
+	}
 
 	pr_debug("registered '%s' to space %d at 0x%lx\n",
 		 dev->name ? dev->name : "unknown", type, base);
-
 	return 0;
 }
 
-uint64_t vm_bus_dispatch_read(struct vm_machine *machine, enum vm_bus_type type,
-			      uint64_t addr, uint8_t size)
+/**
+ * modvm_bus_dispatch_read - route a read operation to the owning peripheral
+ * @ctx: the overarching machine context
+ * @type: the target address space
+ * @addr: the absolute requested address
+ * @size: the size of the read request in bytes
+ *
+ * Return: the value supplied by the device, or ~0ULL if unmapped/out-of-bounds.
+ */
+uint64_t modvm_bus_dispatch_read(struct modvm_ctx *ctx,
+				 enum modvm_bus_type type, uint64_t addr,
+				 uint8_t size)
 {
-	struct vm_bus_region *pos;
+	struct modvm_bus_region *pos;
 	struct list_head *list;
 	uint64_t offset;
 
-	if (WARN_ON(!machine))
+	if (WARN_ON(!ctx))
 		return ~0ULL;
 
-	list = (type == VM_BUS_PIO) ? &machine->bus.pio_regions :
-				      &machine->bus.mmio_regions;
+	list = (type == MODVM_BUS_PIO) ? &ctx->bus.pio_regions :
+					 &ctx->bus.mmio_regions;
 
 	list_for_each_entry(pos, list, node)
 	{
 		if (addr >= pos->base && addr < pos->base + pos->size) {
 			offset = addr - pos->base;
 
-			/* Strict boundary enforcement to prevent hypervisor out-of-bounds access */
-			if (offset + size > pos->size) {
+			if (unlikely(offset + size > pos->size)) {
 				pr_warn("cross-boundary read intercepted at offset 0x%lx\n",
 					offset);
 				return ~0ULL;
 			}
 
-			if (pos->dev->ops->read)
+			if (likely(pos->dev->ops->read))
 				return pos->dev->ops->read(pos->dev, offset,
 							   size);
 
@@ -114,36 +120,43 @@ uint64_t vm_bus_dispatch_read(struct vm_machine *machine, enum vm_bus_type type,
 		}
 	}
 
-	/* Simulate floating bus behavior where unmapped lines return high */
+	/* Floating bus paradigm: unmapped electrical lines return high */
 	return ~0ULL;
 }
 
-void vm_bus_dispatch_write(struct vm_machine *machine, enum vm_bus_type type,
-			   uint64_t addr, uint64_t val, uint8_t size)
+/**
+ * modvm_bus_dispatch_write - route a write operation to the owning peripheral
+ * @ctx: the overarching machine context
+ * @type: the target address space
+ * @addr: the absolute requested address
+ * @val: the payload to write
+ * @size: the size of the write request in bytes
+ */
+void modvm_bus_dispatch_write(struct modvm_ctx *ctx, enum modvm_bus_type type,
+			      uint64_t addr, uint64_t val, uint8_t size)
 {
-	struct vm_bus_region *pos;
+	struct modvm_bus_region *pos;
 	struct list_head *list;
 	uint64_t offset;
 
-	if (WARN_ON(!machine))
+	if (WARN_ON(!ctx))
 		return;
 
-	list = (type == VM_BUS_PIO) ? &machine->bus.pio_regions :
-				      &machine->bus.mmio_regions;
+	list = (type == MODVM_BUS_PIO) ? &ctx->bus.pio_regions :
+					 &ctx->bus.mmio_regions;
 
 	list_for_each_entry(pos, list, node)
 	{
 		if (addr >= pos->base && addr < pos->base + pos->size) {
 			offset = addr - pos->base;
 
-			/* Strict boundary enforcement */
-			if (offset + size > pos->size) {
+			if (unlikely(offset + size > pos->size)) {
 				pr_warn("cross-boundary write intercepted at offset 0x%lx\n",
 					offset);
 				return;
 			}
 
-			if (pos->dev->ops->write)
+			if (likely(pos->dev->ops->write))
 				pos->dev->ops->write(pos->dev, offset, val,
 						     size);
 

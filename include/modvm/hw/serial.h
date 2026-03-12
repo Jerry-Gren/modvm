@@ -7,18 +7,15 @@
 #include <modvm/core/chardev.h>
 
 /**
- * struct serial_pdata - hardwired configuration for serial devices.
- * @base: the starting address on the I/O bus.
- * @irq: the pre-wired interrupt line to signal the processor.
- * @console: the host character device backend for data stream routing.
- *
- * Provides immutable hardware routing information (platform data) to the 
- * serial device class during the device instantiation phase.
+ * struct modvm_serial_pdata - hardwired configuration for serial devices
+ * @base: the starting address on the I/O bus
+ * @irq: the pre-wired interrupt line to signal the processor
+ * @console: the host character device backend for data stream routing
  */
-struct serial_pdata {
+struct modvm_serial_pdata {
 	uint64_t base;
-	struct vm_irq *irq;
-	struct vm_chardev *console;
+	struct modvm_irq *irq;
+	struct modvm_chardev *console;
 };
 
 #endif /* MODVM_HW_SERIAL_H */

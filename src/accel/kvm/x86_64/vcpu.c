@@ -5,9 +5,10 @@
 
 #include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
-#include <modvm/core/machine.h>
+#include <modvm/core/modvm.h>
 #include <modvm/utils/container_of.h>
 #include <modvm/utils/log.h>
+#include <modvm/utils/compiler.h>
 
 #include "../internal.h"
 
@@ -15,19 +16,17 @@
 #define pr_fmt(fmt) "kvm_x86: " fmt
 
 /**
- * kvm_arch_vcpu_set_pc - set the instruction pointer for x86_64.
- * @vcpu: the virtual processor.
- * @pc: the physical address to begin execution.
+ * modvm_kvm_arch_vcpu_set_pc - set the instruction pointer for x86_64
+ * @vcpu: the virtual processor
+ * @pc: the physical address to begin execution
  *
- * Configures the code segment and instruction pointer registers
- * to prepare the vCPU for 16-bit real mode execution at the given
- * physical address.
+ * Prepares the segment registers to enter 16-bit real mode.
  *
- * return: 0 on success, or a negative error code.
+ * Return: 0 on success, or a negative error code.
  */
-int kvm_arch_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
+int modvm_kvm_arch_vcpu_set_pc(struct modvm_vcpu *vcpu, uint64_t pc)
 {
-	struct kvm_vcpu_state *state = vcpu->priv;
+	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 	struct kvm_sregs sregs;
 	struct kvm_regs regs;
 
@@ -41,7 +40,6 @@ int kvm_arch_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
 
 	memset(&regs, 0, sizeof(regs));
 	regs.rip = pc;
-	/* RFLAGS bit 1 must always be 1 according to the x86 architecture manual */
 	regs.rflags = 0x2;
 
 	if (ioctl(state->vcpu_fd, KVM_SET_REGS, &regs) < 0)
@@ -51,22 +49,24 @@ int kvm_arch_vcpu_set_pc(struct vm_vcpu *vcpu, uint64_t pc)
 }
 
 /**
- * kvm_arch_vcpu_handle_exit - handle architecture-specific KVM exits.
- * @vcpu: the virtual processor.
- * @run: the kvm_run structure containing exit state.
+ * modvm_kvm_arch_vcpu_handle_exit - handle architecture-specific traps
+ * @vcpu: the virtual processor
+ * @run: the shared kvm_run communication structure
  *
- * Handles x86-specific exits such as Port I/O and triple faults.
+ * Processes x86 legacy Port I/O instructions (IN/OUT) by routing them
+ * to the global PIO bus architecture.
  *
- * return: 0 if the exit was handled and execution should continue,
- * or a negative error code to abort execution.
+ * Return: 0 to resume execution, or a negative error code to abort.
  */
-int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run)
+int modvm_kvm_arch_vcpu_handle_exit(struct modvm_vcpu *vcpu,
+				    struct kvm_run *run)
 {
-	struct vm_machine *machine =
-		container_of(vcpu->hv, struct vm_machine, hv);
+	struct modvm_ctx *ctx =
+		container_of(vcpu->accel, struct modvm_ctx, accel);
 	uint16_t port;
 	uint8_t size;
-	uint32_t count, i;
+	uint32_t count;
+	uint32_t i;
 	uint8_t *data;
 
 	switch (run->exit_reason) {
@@ -77,7 +77,7 @@ int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run)
 		data = (uint8_t *)run + run->io.data_offset;
 
 		for (i = 0; i < count; i++) {
-			if (run->io.direction == KVM_EXIT_IO_OUT) {
+			if (likely(run->io.direction == KVM_EXIT_IO_OUT)) {
 				uint64_t val = 0;
 
 				switch (size) {
@@ -92,11 +92,11 @@ int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run)
 					break;
 				}
 
-				vm_bus_dispatch_write(machine, VM_BUS_PIO, port,
-						      val, size);
+				modvm_bus_dispatch_write(ctx, MODVM_BUS_PIO,
+							 port, val, size);
 			} else {
-				uint64_t val = vm_bus_dispatch_read(
-					machine, VM_BUS_PIO, port, size);
+				uint64_t val = modvm_bus_dispatch_read(
+					ctx, MODVM_BUS_PIO, port, size);
 
 				switch (size) {
 				case 1:
@@ -115,11 +115,13 @@ int kvm_arch_vcpu_handle_exit(struct vm_vcpu *vcpu, struct kvm_run *run)
 		return 0;
 
 	case KVM_EXIT_SHUTDOWN:
-		pr_err("vcpu %d triggered a fatal triple fault\n", vcpu->id);
+		pr_err("vcpu %d triggered a fatal triple fault hardware shutdown\n",
+		       vcpu->id);
 		return -EFAULT;
 
 	default:
-		pr_warn("unhandled arch exit: %d\n", run->exit_reason);
+		pr_warn("unhandled architectural exit reason: %d\n",
+			run->exit_reason);
 		return -ENOTSUP;
 	}
 }

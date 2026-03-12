@@ -16,12 +16,30 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Werror -Wno-unused-value)
 endif()
 
-option(ENABLE_ASAN "Enable AddressSanitizer for memory error detection" ON)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(STATUS "Clang detected: Enabling Static Thread Safety Analysis")
+    add_compile_options(-Wthread-safety)
+    add_compile_definitions(WARN_CONTEXT_ANALYSIS)
+endif()
 
-if(ENABLE_ASAN)
-    message(STATUS "AddressSanitizer is ENABLED")
-    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
-    add_link_options(-fsanitize=address)
+option(ENABLE_SANITIZERS "Enable Address and Undefined Behavior Sanitizers" ON)
+
+if(ENABLE_SANITIZERS)
+    message(STATUS "Sanitizers (ASAN & UBSAN) are ENABLED")
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
+option(ENABLE_HARDENING "Enable security hardening flags (PIE, RELRO, Stack Protector)" ON)
+
+if(ENABLE_HARDENING)
+    message(STATUS "Security Hardening is ENABLED")
+    
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    
+    add_compile_options(-fstack-protector-strong -D_FORTIFY_SOURCE=2 -O2)
+    
+    add_link_options("-Wl,-z,relro,-z,now")
 endif()
 
 # Detect host CPU architecture and set corresponding preprocessor macros

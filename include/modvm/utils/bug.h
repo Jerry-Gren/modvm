@@ -15,11 +15,11 @@
  * If you're tempted to BUG(), think again:  is completely giving up
  * really the *only* solution?  There are usually better options.
  */
-#define BUG()                                                         \
-	do {                                                          \
-		vm_log(VM_LOG_EMERG, "BUG: failure at %s:%d/%s()!\n", \
-		       __FILE__, __LINE__, __func__);                 \
-		vm_panic("BUG!");                                     \
+#define BUG()                                                               \
+	do {                                                                \
+		modvm_log(MODVM_LOG_EMERG, "BUG: failure at %s:%d/%s()!\n", \
+			  __FILE__, __LINE__, __func__);                    \
+		modvm_panic("BUG!");                                        \
 	} while (0)
 
 /**
@@ -41,13 +41,14 @@
  * warning if true, and returns the condition's value so it can be used
  * directly in an if-statement.
  */
-#define WARN(condition, fmt, ...)                                            \
-	({                                                                   \
-		int __ret_warn_on = !!(condition);                           \
-		if (unlikely(__ret_warn_on))                                 \
-			vm_log(VM_LOG_WARN, "WARNING: at %s:%d/%s()\n" fmt,  \
-			       __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
-		unlikely(__ret_warn_on);                                     \
+#define WARN(condition, fmt, ...)                                           \
+	({                                                                  \
+		int __ret_warn_on = !!(condition);                          \
+		if (unlikely(__ret_warn_on))                                \
+			modvm_log(MODVM_LOG_WARN,                           \
+				  "WARNING: at %s:%d/%s()\n" fmt, __FILE__, \
+				  __LINE__, __func__, ##__VA_ARGS__);       \
+		unlikely(__ret_warn_on);                                    \
 	})
 
 #define WARN_ON(condition) WARN(condition, "")

@@ -10,6 +10,8 @@
 #include <modvm/core/chardev.h>
 #include <modvm/os/event_loop.h>
 #include <modvm/utils/log.h>
+#include <modvm/utils/bug.h>
+#include <modvm/utils/compiler.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "posix_stdio: " fmt
@@ -23,7 +25,8 @@ struct stdio_ctx {
 	size_t tx_len;
 };
 
-static int stdio_write(struct vm_chardev *dev, const uint8_t *buf, size_t len)
+static int stdio_write(struct modvm_chardev *dev, const uint8_t *buf,
+		       size_t len)
 {
 	struct stdio_ctx *ctx = dev->priv;
 	size_t i;
@@ -31,18 +34,15 @@ static int stdio_write(struct vm_chardev *dev, const uint8_t *buf, size_t len)
 	for (i = 0; i < len; i++) {
 		ctx->tx_buf[ctx->tx_len++] = buf[i];
 
-		if (buf[i] == '\n' || ctx->tx_len >= STDIO_TX_BUF_SIZE) {
-			/*
-			 * simulate transmission over a wire without hardware flow control.
-			 * If the host terminal emulator is backpressured, we intentionally
-			 * drop the payload to accurately mimic an electrical overrun.
-			 */
+		if (unlikely(buf[i] == '\n' ||
+			     ctx->tx_len >= STDIO_TX_BUF_SIZE)) {
 			ssize_t ret =
 				write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len);
 
-			if (ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+			if (unlikely(ret < 0 && errno != EAGAIN &&
+				     errno != EWOULDBLOCK))
 				pr_warn_once(
-					"untracked standard output write error %d\n",
+					"untracked standard output pipe congestion %d\n",
 					errno);
 
 			ctx->tx_len = 0;
@@ -53,54 +53,54 @@ static int stdio_write(struct vm_chardev *dev, const uint8_t *buf, size_t len)
 }
 
 /**
- * stdio_rx_cb - invoked by the global event loop when STDIN has data.
- * @fd: the STDIN file descriptor.
- * @events: bitmask of triggered poll events.
- * @data: pointer to the character device instance.
+ * stdio_rx_cb - invoked by the global event loop when STDIN data arrives
+ * @fd: the STDIN descriptor
+ * @events: bitmask of triggered poll events
+ * @data: opaque closure pointing to the character device instance
  */
 static void stdio_rx_cb(int fd, uint32_t events, void *data)
 {
-	struct vm_chardev *dev = data;
+	struct modvm_chardev *dev = data;
 	uint8_t rx_buf[64];
 	ssize_t ret;
 
-	if (!(events & VM_EVENT_READ))
+	if (unlikely(!(events & MODVM_EVENT_READ)))
 		return;
 
 	ret = read(fd, rx_buf, sizeof(rx_buf));
-	if (ret > 0 && dev->rx_cb)
+	if (likely(ret > 0 && dev->rx_cb))
 		dev->rx_cb(dev->rx_data, rx_buf, ret);
 }
 
-static void stdio_set_rx_cb(struct vm_chardev *dev, struct vm_machine *machine,
-			    vm_chardev_rx_cb_t cb, void *data)
+static void stdio_set_rx_cb(struct modvm_chardev *dev, struct modvm_ctx *ctx,
+			    modvm_chardev_rx_cb_t cb, void *data)
 {
 	(void)data;
 
 	if (cb) {
-		vm_event_loop_add_fd(machine, STDIN_FILENO, VM_EVENT_READ,
-				     stdio_rx_cb, dev);
+		modvm_event_loop_add_fd(ctx, STDIN_FILENO, MODVM_EVENT_READ,
+					stdio_rx_cb, dev);
 	} else {
-		vm_event_loop_rm_fd(machine, STDIN_FILENO);
+		modvm_event_loop_rm_fd(ctx, STDIN_FILENO);
 	}
 }
 
-static const struct vm_chardev_ops stdio_ops = {
+static const struct modvm_chardev_ops stdio_ops = {
 	.write = stdio_write,
 	.set_rx_cb = stdio_set_rx_cb,
 };
 
 /**
- * vm_chardev_stdio_create - hijack host terminal for guest serial output.
+ * modvm_chardev_stdio_create - hijack host terminal for console input/output
  *
- * Configures the host standard input/output to operate in non-blocking
- * raw mode, preventing the host OS from interpreting special characters.
+ * Disables canonical text processing on the host terminal to allow the
+ * guest operating system full control over character interpretation.
  *
- * return: an allocated character device object, or NULL on failure.
+ * Return: an allocated character device object, or NULL on failure.
  */
-struct vm_chardev *vm_chardev_stdio_create(void)
+struct modvm_chardev *modvm_chardev_stdio_create(void)
 {
-	struct vm_chardev *dev;
+	struct modvm_chardev *dev;
 	struct stdio_ctx *ctx;
 	struct termios raw;
 	int flags;
@@ -136,21 +136,26 @@ struct vm_chardev *vm_chardev_stdio_create(void)
 }
 
 /**
- * vm_chardev_stdio_destroy - release terminal and restore host settings.
- * @dev: The character device to tear down.
+ * modvm_chardev_stdio_destroy - release terminal and restore standard settings
+ * @dev: the character device to tear down
  */
-void vm_chardev_stdio_destroy(struct vm_chardev *dev)
+void modvm_chardev_stdio_destroy(struct modvm_chardev *dev)
 {
 	struct stdio_ctx *ctx;
 
-	if (!dev)
+	if (WARN_ON(!dev))
 		return;
 
 	ctx = dev->priv;
 
-	/* flush if buffer is not empty when exit */
-	if (ctx->tx_len > 0)
-		write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len);
+	if (ctx->tx_len > 0) {
+		if (write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len) < 0) {
+			/*
+			 * Best effort flush during teardown. 
+			 * Safely ignore errors if the host pipe is already broken or closed.
+			 */
+		}
+	}
 
 	if (ctx->is_saved)
 		tcsetattr(STDIN_FILENO, TCSANOW, &ctx->orig_termios);

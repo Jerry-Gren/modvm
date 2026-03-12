@@ -4,18 +4,17 @@
 
 #include <modvm/core/device.h>
 
-struct vm_irq;
+struct modvm_irq;
 
 /**
- * typedef vm_irq_cb_t - callback invoked upon interrupt state change.
- * @data: contextual data pointer provided during allocation.
- * @level: the logical voltage level representing the line state (0 or 1).
+ * typedef modvm_irq_cb_t - callback invoked upon interrupt state change
+ * @data: contextual data pointer provided during allocation
+ * @level: the logical voltage level representing the line state (0 or 1)
  */
-typedef void (*vm_irq_cb_t)(void *data, int level);
+typedef void (*modvm_irq_cb_t)(void *data, int level);
 
-struct vm_irq *vm_devm_irq_alloc(struct vm_device *dev, vm_irq_cb_t cb,
-				 void *data);
-
-void vm_irq_set_level(struct vm_irq *irq, int level);
+struct modvm_irq *modvm_devm_irq_alloc(struct modvm_device *dev,
+				       modvm_irq_cb_t cb, void *data);
+void modvm_irq_set_level(struct modvm_irq *irq, int level);
 
 #endif /* MODVM_CORE_IRQ_H */

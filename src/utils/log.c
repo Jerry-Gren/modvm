@@ -5,6 +5,9 @@
 #include <errno.h>
 
 #include <modvm/utils/log.h>
+#include <modvm/utils/bug.h>
+#include <modvm/utils/err.h>
+#include <modvm/utils/compiler.h>
 #include <modvm/os/thread.h>
 
 /* Don't do this:
@@ -13,34 +16,32 @@
  * #define pr_fmt(fmt) "log: " fmt
  */
 
-/* Standard buffer size for a single log line, typical in kernel environments */
 #define LOG_LINE_MAX_LENGTH 1024
 
-/* Mapping log levels to standard colorized output or specific prefixes */
 static const char *const level_prefixes[] = {
-	[VM_LOG_EMERG] = "[EMERG]  ", [VM_LOG_ALERT] = "[ALERT]  ",
-	[VM_LOG_CRIT] = "[CRIT]   ",  [VM_LOG_ERR] = "[ERROR]  ",
-	[VM_LOG_WARN] = "[WARN]   ",  [VM_LOG_NOTICE] = "[NOTICE] ",
-	[VM_LOG_INFO] = "[INFO]   ",  [VM_LOG_DEBUG] = "[DEBUG]  ",
+	[MODVM_LOG_EMERG] = "[EMERG]  ", [MODVM_LOG_ALERT] = "[ALERT]  ",
+	[MODVM_LOG_CRIT] = "[CRIT]   ",	 [MODVM_LOG_ERR] = "[ERROR]  ",
+	[MODVM_LOG_WARN] = "[WARN]   ",	 [MODVM_LOG_NOTICE] = "[NOTICE] ",
+	[MODVM_LOG_INFO] = "[INFO]   ",	 [MODVM_LOG_DEBUG] = "[DEBUG]  ",
 };
 
 static struct os_mutex *log_lock = NULL;
 
 /**
- * vm_log_initialize - initialize the global logging subsystem
+ * modvm_log_initialize - initialize the global logging subsystem
  *
  * Allocates the synchronization primitive required to prevent log tearing
- * in symmetric multiprocessing environments. This must be invoked explicitly
- * by the bootstrap processor before any concurrent threads are spawned.
+ * in symmetric multiprocessing environments. Must be invoked early.
  *
- * return: 0 upon successful initialization, or a negative error code.
+ * Return: 0 upon successful initialization, or a negative error code.
  */
-int vm_log_initialize(void)
+int modvm_log_initialize(void)
 {
 	if (!log_lock) {
 		log_lock = os_mutex_create();
-		if (!log_lock) {
+		if (IS_ERR(log_lock)) {
 			fprintf(stderr, "[CRIT]   failed to init log mutex\n");
+			log_lock = NULL;
 			return -ENOMEM;
 		}
 	}
@@ -48,12 +49,9 @@ int vm_log_initialize(void)
 }
 
 /**
- * vm_log_destroy - tear down the global logging subsystem
- *
- * Releases the synchronization primitive. Any concurrent logging attempts
- * after this point may result in undefined behavior.
+ * modvm_log_destroy - tear down the global logging subsystem
  */
-void vm_log_destroy(void)
+void modvm_log_destroy(void)
 {
 	if (log_lock) {
 		os_mutex_destroy(log_lock);
@@ -62,18 +60,16 @@ void vm_log_destroy(void)
 }
 
 /**
- * vm_log - emits a formatted message to the standard output streams
+ * modvm_log - emits a formatted message to the standard output streams
  * @level: the severity level of the message determining its output target
- * @format_string: the format specification string
+ * @fmt: the format specification string
  *
  * Assembles the severity prefix and the payload into a local stack buffer.
- * The final output loop is protected by a mutual exclusion lock to ensure
- * atomic character emission, preventing interlaced text output when multiple
- * virtual processors execute logging routines simultaneously.
+ * Protected by a mutual exclusion lock to ensure atomic character emission.
  *
- * return: the total number of characters processed.
+ * Return: the total number of characters processed.
  */
-int vm_log(enum vm_log_level level, const char *fmt, ...)
+int modvm_log(enum modvm_log_level level, const char *fmt, ...)
 {
 	va_list args;
 	int ret;
@@ -82,30 +78,30 @@ int vm_log(enum vm_log_level level, const char *fmt, ...)
 	int avail;
 	int i;
 	char buf[LOG_LINE_MAX_LENGTH];
-	FILE *stream = (level <= VM_LOG_ERR) ? stderr : stdout;
+	FILE *stream = (level <= MODVM_LOG_ERR) ? stderr : stdout;
 
-	if (level <= VM_LOG_DEBUG) {
+	if (level <= MODVM_LOG_DEBUG) {
 		prefix_len =
 			snprintf(buf, sizeof(buf), "%s", level_prefixes[level]);
-		if (prefix_len < 0)
+		if (unlikely(prefix_len < 0))
 			prefix_len = 0;
-		else if (prefix_len >= (int)sizeof(buf))
+		else if (unlikely(prefix_len >= (int)sizeof(buf)))
 			prefix_len = sizeof(buf) - 1;
 	}
 
 	avail = sizeof(buf) - prefix_len;
-	if (avail > 0) {
+	if (likely(avail > 0)) {
 		va_start(args, fmt);
 		ret = vsnprintf(buf + prefix_len, avail, fmt, args);
 		va_end(args);
 
-		if (ret < 0) {
+		if (unlikely(ret < 0)) {
 			/*
 			 * Encountered an encoding error during string formatting.
 			 * Discard the payload but retain the prefix.
 			 */
 			payload_len = 0;
-		} else if (ret >= avail) {
+		} else if (unlikely(ret >= avail)) {
 			/*
 			 * The formatted output exceeded the buffer capacity.
 			 * The vsnprintf function returns the projected length, not the
@@ -126,7 +122,7 @@ int vm_log(enum vm_log_level level, const char *fmt, ...)
 	 * (e.g., extremely early boot errors), we still attempt to print, risking
 	 * log tearing rather than losing critical diagnostics.
 	 */
-	if (log_lock)
+	if (likely(log_lock))
 		os_mutex_lock(log_lock);
 
 	/*
@@ -140,20 +136,20 @@ int vm_log(enum vm_log_level level, const char *fmt, ...)
 	}
 	fflush(stream);
 
-	if (log_lock)
+	if (likely(log_lock))
 		os_mutex_unlock(log_lock);
 
 	return prefix_len + payload_len;
 }
 
 /**
- * vm_panic - abort the virtualization engine on unrecoverable errors
- * @format_string: the descriptive format string explaining the fatality
+ * modvm_panic - abort the virtualization engine on unrecoverable errors
+ * @fmt: the descriptive format string explaining the fatality
  *
- * This routine is decorated with the noreturn attribute. It flushes a final
- * diagnostic message directly to standard error and halts the host process.
+ * Flushes a final diagnostic message directly to standard error and halts
+ * the host process. Decorated with the noreturn attribute.
  */
-void vm_panic(const char *fmt, ...)
+void modvm_panic(const char *fmt, ...)
 {
 	va_list args;
 	char buf[LOG_LINE_MAX_LENGTH];

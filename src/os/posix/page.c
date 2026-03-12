@@ -7,11 +7,16 @@
 
 #include <modvm/os/page.h>
 #include <modvm/utils/err.h>
+#include <modvm/utils/bug.h>
+#include <modvm/utils/compiler.h>
 
 /**
- * os_page_size - Retrieve the native hardware page size.
+ * os_page_size - retrieve the native hardware page size
  *
- * Return: The size of a single memory page in bytes.
+ * Interrogates the host operating system for the underlying architecture's
+ * default page frame size (typically 4KB).
+ *
+ * Return: the size of a single memory page in bytes.
  */
 size_t os_page_size(void)
 {
@@ -19,33 +24,48 @@ size_t os_page_size(void)
 }
 
 /**
- * os_page_alloc - Allocate page-aligned anonymous memory.
- * @size: The total amount of memory to allocate in bytes.
+ * os_page_alloc - allocate page-aligned anonymous memory
+ * @size: the total amount of memory to allocate in bytes
  *
- * Requests memory directly from the host kernel using mmap. The returned
- * pointer is guaranteed to be page-aligned, which is strictly required
- * for nested paging (EPT/NPT).
+ * Requests memory directly from the host kernel via mmap. The returned
+ * pointer is guaranteed to be strictly page-aligned, which is an absolute
+ * requirement for nested paging mechanisms like Intel EPT or AMD NPT.
  *
- * Return: Pointer to the allocated memory, or an ERR_PTR on failure.
+ * Return: pointer to the allocated memory, or an ERR_PTR on failure.
  */
 void *os_page_alloc(size_t size)
 {
-	void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
-			 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	void *ptr;
 
-	if (ptr == MAP_FAILED)
+	if (WARN_ON(size == 0))
+		return ERR_PTR(-EINVAL);
+
+	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+	if (unlikely(ptr == MAP_FAILED))
 		return ERR_PTR(-ENOMEM);
 
+#ifdef MADV_HUGEPAGE
+	/* Advice the kernel to use huge page */
+	if (madvise(ptr, size, MADV_HUGEPAGE) < 0) {
+		pr_debug(
+			"host OS rejected hugepage advice (errno: %d), falling back to 4KB pages\n",
+			errno);
+	}
+#endif
 	return ptr;
 }
 
 /**
- * os_page_free - Release previously allocated page-aligned memory.
- * @ptr: The base address of the memory block.
- * @size: The exact size provided during allocation.
+ * os_page_free - release previously allocated page-aligned memory
+ * @ptr: the base address of the memory block
+ * @size: the exact size provided during allocation
  */
 void os_page_free(void *ptr, size_t size)
 {
-	if (ptr && !IS_ERR(ptr))
-		munmap(ptr, size);
+	if (WARN_ON(!ptr || IS_ERR(ptr) || size == 0))
+		return;
+
+	munmap(ptr, size);
 }

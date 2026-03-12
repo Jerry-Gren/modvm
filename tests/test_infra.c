@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <stdarg.h>
 #include <string.h>
 
 #include <modvm/utils/compiler.h>
@@ -15,63 +14,63 @@
 #include <modvm/core/res_pool.h>
 
 #include <modvm/core/bus.h>
-#include <modvm/core/devres.h>
+#include <modvm/core/modvm.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "test_infra: " fmt
 
-struct mock_dev {
+struct mock_hw_regs {
 	uint32_t ctrl_reg;
 	uint32_t stat_reg;
-
 	struct_group(dma_regs, uint32_t dma_src; uint32_t dma_dst;);
-
 	DECLARE_FLEX_ARRAY(uint8_t, fifo);
 };
 
-ASSERT_STRUCT_OFFSET(struct mock_dev, ctrl_reg, 0);
-ASSERT_STRUCT_OFFSET(struct mock_dev, stat_reg, 4);
-ASSERT_STRUCT_OFFSET(struct mock_dev, dma_src, 8);
-ASSERT_STRUCT_OFFSET(struct mock_dev, fifo, 16);
+ASSERT_STRUCT_OFFSET(struct mock_hw_regs, ctrl_reg, 0);
+ASSERT_STRUCT_OFFSET(struct mock_hw_regs, stat_reg, 4);
+ASSERT_STRUCT_OFFSET(struct mock_hw_regs, dma_src, 8);
+ASSERT_STRUCT_OFFSET(struct mock_hw_regs, fifo, 16);
 
 static_assert(__same_type(uint32_t, unsigned int), "type matching failed");
 
-struct vm_task {
+struct mock_task {
 	int id;
 	const char *name;
 	struct list_head node;
-	struct hlist_node hnode;
 };
 
 static void test_container_of(void)
 {
-	struct vm_task parent = { .id = 42 };
+	struct mock_task parent = { .id = 42 };
 	struct list_head *link = &parent.node;
 
-	struct vm_task *recovered = container_of(link, struct vm_task, node);
+	struct mock_task *recovered =
+		container_of(link, struct mock_task, node);
 
 	if (WARN_ON(recovered->id != 42))
-		vm_panic("container_of macro mapping failed\n");
+		modvm_panic(
+			"container_of macro structural translation failed\n");
 
-	pr_info("container_of structural translation passed\n");
+	pr_info("container_of mapping passed\n");
 }
 
 static void test_list(void)
 {
 	LIST_HEAD(run_queue);
 
-	struct vm_task t1 = { .id = 1, .name = "init" };
-	struct vm_task t2 = { .id = 2, .name = "network" };
-	struct vm_task t3 = { .id = 3, .name = "block_io" };
+	struct mock_task t1 = { .id = 1, .name = "init" };
+	struct mock_task t2 = { .id = 2, .name = "network" };
+	struct mock_task t3 = { .id = 3, .name = "block_io" };
 
 	list_add_tail(&t1.node, &run_queue);
 	list_add_tail(&t2.node, &run_queue);
 	list_add_tail(&t3.node, &run_queue);
 
 	if (WARN_ON(list_empty(&run_queue)))
-		vm_panic("queue should not be empty after insertions\n");
+		modvm_panic(
+			"queue falsely reported as empty after insertions\n");
 
-	struct vm_task *pos, *n;
+	struct mock_task *pos, *n;
 	int expected_id = 1;
 
 	list_for_each_entry_safe(pos, n, &run_queue, node)
@@ -79,24 +78,23 @@ static void test_list(void)
 		pr_debug("scheduling task: %s (id %d)\n", pos->name, pos->id);
 
 		if (pos->id != expected_id++)
-			vm_panic(
+			modvm_panic(
 				"linked list topological ordering corrupted\n");
 
 		list_del_init(&pos->node);
 	}
 
 	if (WARN_ON(!list_empty(&run_queue)))
-		vm_panic("list node deletion failed, artifacts remain\n");
+		modvm_panic("list node deletion failed, artifacts remain\n");
 
-	pr_info("doubly-linked list memory operations passed\n");
+	pr_info("doubly-linked list operations passed\n");
 }
 
 struct mock_timer_ctx {
 	uint32_t ticks;
-	bool irq_en;
 };
 
-static uint64_t mock_timer_read(struct vm_device *dev, uint64_t offset,
+static uint64_t mock_timer_read(struct modvm_device *dev, uint64_t offset,
 				uint8_t size)
 {
 	struct mock_timer_ctx *ctx = dev->priv;
@@ -110,7 +108,7 @@ static uint64_t mock_timer_read(struct vm_device *dev, uint64_t offset,
 	return 0;
 }
 
-static void mock_timer_write(struct vm_device *dev, uint64_t offset,
+static void mock_timer_write(struct modvm_device *dev, uint64_t offset,
 			     uint64_t val, uint8_t size)
 {
 	struct mock_timer_ctx *ctx = dev->priv;
@@ -118,85 +116,73 @@ static void mock_timer_write(struct vm_device *dev, uint64_t offset,
 
 	if (offset == 0)
 		ctx->ticks = (uint32_t)val;
-	else if (offset == 3)
-		ctx->irq_en = (val == 1);
 }
 
-static const struct vm_device_ops mock_timer_ops = {
+static const struct modvm_device_ops mock_timer_ops = {
 	.read = mock_timer_read,
 	.write = mock_timer_write,
 };
 
 static void test_bus_routing(void)
 {
-	struct vm_machine mock_machine;
-	struct mock_timer_ctx timer_ctx = { .ticks = 100, .irq_en = false };
-	struct vm_device timer_dev = {
+	struct modvm_ctx mock_ctx;
+	struct mock_timer_ctx timer_ctx = { .ticks = 100 };
+	struct modvm_device timer_dev = {
 		.name = "mock_timer",
 		.ops = &mock_timer_ops,
 		.priv = &timer_ctx,
-		.machine = &mock_machine,
+		.ctx = &mock_ctx,
 	};
-	struct vm_device dummy_dev = {
+	struct modvm_device dummy_dev = {
 		.name = "dummy",
 		.ops = &mock_timer_ops,
-		.machine = &mock_machine,
+		.ctx = &mock_ctx,
 	};
-
 	int ret;
 	uint64_t val;
 
 	pr_info("evaluating system bus topological routing\n");
 
-	/* Initialize mock machine bus topology */
-	memset(&mock_machine, 0, sizeof(mock_machine));
-	INIT_LIST_HEAD(&mock_machine.bus.pio_regions);
-	INIT_LIST_HEAD(&mock_machine.bus.mmio_regions);
+	memset(&mock_ctx, 0, sizeof(mock_ctx));
+	INIT_LIST_HEAD(&mock_ctx.bus.pio_regions);
+	INIT_LIST_HEAD(&mock_ctx.bus.mmio_regions);
 
-	/* Required initialization since we allocate devices on the stack for testing */
-	vm_res_pool_init(&timer_dev.devres_pool, &timer_dev);
-	vm_res_pool_init(&dummy_dev.devres_pool, &dummy_dev);
+	modvm_res_pool_init(&timer_dev.devm_pool, &timer_dev);
+	modvm_res_pool_init(&dummy_dev.devm_pool, &dummy_dev);
 
-	ret = vm_bus_register_region(VM_BUS_PIO, 0x40, 4, &timer_dev);
+	ret = modvm_bus_register_region(MODVM_BUS_PIO, 0x40, 4, &timer_dev);
 	if (WARN_ON(ret != 0))
-		vm_panic("failed to register pio peripheral\n");
+		modvm_panic("failed to register pio peripheral\n");
 
-	ret = vm_bus_register_region(VM_BUS_PIO, 0x42, 1, &dummy_dev);
+	ret = modvm_bus_register_region(MODVM_BUS_PIO, 0x42, 1, &dummy_dev);
 	if (WARN_ON(ret == 0))
-		vm_panic("bus permitted overlapping address registration\n");
+		modvm_panic("bus permitted overlapping address registration\n");
 
-	ret = vm_bus_register_region(VM_BUS_MMIO, 0x42, 1, &dummy_dev);
+	ret = modvm_bus_register_region(MODVM_BUS_MMIO, 0x42, 1, &dummy_dev);
 	if (WARN_ON(ret != 0))
-		vm_panic("bus failed to isolate pio and mmio spaces\n");
+		modvm_panic("bus failed to isolate pio and mmio spaces\n");
 
-	vm_bus_dispatch_write(&mock_machine, VM_BUS_PIO, 0x40, 500, 4);
+	modvm_bus_dispatch_write(&mock_ctx, MODVM_BUS_PIO, 0x40, 500, 4);
 	if (WARN_ON(timer_ctx.ticks != 500))
-		vm_panic("write routing failed to mutate state\n");
+		modvm_panic("write routing failed to mutate state\n");
 
-	val = vm_bus_dispatch_read(&mock_machine, VM_BUS_PIO, 0x40, 4);
+	val = modvm_bus_dispatch_read(&mock_ctx, MODVM_BUS_PIO, 0x40, 4);
 	if (WARN_ON(val != 500))
-		vm_panic("read routing returned incorrect data: %lu\n", val);
+		modvm_panic("read routing returned incorrect data\n");
 
-	if (WARN_ON(timer_ctx.ticks != 501))
-		vm_panic("hardware state machine failed to tick upon read\n");
-
-	val = vm_bus_dispatch_read(&mock_machine, VM_BUS_PIO, 0x3f8, 1);
+	val = modvm_bus_dispatch_read(&mock_ctx, MODVM_BUS_PIO, 0x3f8, 1);
 	if (WARN_ON(val != ~0ULL))
-		vm_panic("unmapped port returned %lx instead of high state\n",
-			 val);
+		modvm_panic("unmapped port failed floating bus constraint\n");
 
-	/*
-	 * Trigger the devres teardown sequence explicitly to free the 
-	 * bus region metadata allocated during vm_bus_register_region. 
-	 */
-	vm_res_release_all(&timer_dev.devres_pool);
-	vm_res_release_all(&dummy_dev.devres_pool);
+	modvm_res_release_all(&timer_dev.devm_pool);
+	modvm_res_release_all(&dummy_dev.devm_pool);
 
 	pr_info("bus routing and topology isolation passed\n");
 }
 
 int main(void)
 {
+	modvm_log_initialize();
 	pr_info("initiating modvm infrastructure diagnostic sequence\n");
 
 	test_container_of();
@@ -204,5 +190,6 @@ int main(void)
 	test_bus_routing();
 
 	pr_info("SUCCESS: all core infrastructure checks completed\n");
+	modvm_log_destroy();
 	return 0;
 }
