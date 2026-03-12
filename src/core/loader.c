@@ -144,7 +144,7 @@ int modvm_loader_load_raw(struct modvm_mem_space *space, const char *path,
 	size_t read_len;
 	void *hva;
 
-	if (unlikely(WARN_ON(!space || !path)))
+	if (WARN_ON(!space || !path))
 		return -EINVAL;
 
 	fp = fopen(path, "rb");
