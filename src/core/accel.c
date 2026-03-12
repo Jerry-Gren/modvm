@@ -6,6 +6,8 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 
+#include "internal.h"
+
 #undef pr_fmt
 #define pr_fmt(fmt) "accel: " fmt
 
@@ -118,6 +120,27 @@ int modvm_accel_set_irq(struct modvm_accel *accel, uint32_t gsi, int level)
 		return -ENOTSUP;
 
 	return accel->backend->ops->set_irq(accel, gsi, level);
+}
+
+/**
+ * modvm_accel_map_ram - safely expose the physical memory allocator to the board
+ * @accel: the active hypervisor context
+ * @gpa: the guest physical address to map
+ * @size: capacity of the memory bank in bytes
+ * @flags: access permissions (e.g., MODVM_MEM_EXEC)
+ *
+ * Encapsulates the core memory space structure, preventing the hardware
+ * board topology from directly manipulating internal acceleration state.
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+int modvm_accel_map_ram(struct modvm_accel *accel, uint64_t gpa, size_t size,
+			uint32_t flags)
+{
+	if (WARN_ON(!accel))
+		return -EINVAL;
+
+	return modvm_mem_region_add(&accel->mem_space, gpa, size, flags);
 }
 
 /**

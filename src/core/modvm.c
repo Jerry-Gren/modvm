@@ -11,6 +11,7 @@
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
 #include <modvm/os/event_loop.h>
+#include <modvm/utils/container_of.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "modvm: " fmt
@@ -21,8 +22,14 @@ static void *vcpu_thread_fn(void *data)
 	int ret;
 
 	ret = modvm_vcpu_run(vcpu);
-	if (ret < 0)
-		pr_err("fatal execution error on vcpu %d\n", vcpu->id);
+	if (ret < 0) {
+		struct modvm_ctx *ctx =
+			container_of(vcpu->accel, struct modvm_ctx, accel);
+		pr_err("fatal execution error on vcpu %d, initiating emergency shutdown\n",
+		       vcpu->id);
+		/* This will notify other vcpus */
+		modvm_request_shutdown(ctx);
+	}
 
 	return NULL;
 }

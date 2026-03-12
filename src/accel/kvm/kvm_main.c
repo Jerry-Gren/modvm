@@ -35,8 +35,9 @@ static int kvm_mem_map_cb(struct modvm_mem_space *space,
 			  struct modvm_mem_region *reg, void *data)
 {
 	struct modvm_kvm_state *state = data;
+	int slot = state->mem_slot_idx++;
 	struct kvm_userspace_memory_region hw_reg = {
-		.slot = state->mem_slot_idx++,
+		.slot = slot,
 		.guest_phys_addr = reg->gpa,
 		.memory_size = reg->size,
 		.userspace_addr = (uint64_t)reg->hva,
@@ -53,7 +54,42 @@ static int kvm_mem_map_cb(struct modvm_mem_space *space,
 		return -errno;
 	}
 
+	reg->priv = (void *)(uintptr_t)slot;
+
 	return 0;
+}
+
+/**
+ * kvm_mem_unmap_cb - dismantle hardware memory mappings
+ * @space: the abstract memory space
+ * @reg: the memory region to dismantle
+ * @data: pointer to the private KVM state structure
+ *
+ * Flushes the KVM hardware page tables by setting the memory_size to 0
+ * for the specific slot. This prevents use-after-free corruptions in the
+ * host kernel if the guest accesses the unmapped GPA.
+ */
+static void kvm_mem_unmap_cb(struct modvm_mem_space *space,
+			     struct modvm_mem_region *reg, void *data)
+{
+	struct modvm_kvm_state *state = data;
+	struct kvm_userspace_memory_region hw_reg = {
+		.slot = (uint32_t)(uintptr_t)reg->priv,
+		.guest_phys_addr = 0,
+		.memory_size = 0,
+		.userspace_addr = 0,
+		.flags = 0,
+	};
+
+	(void)space;
+
+	if (ioctl(state->vm_fd, KVM_SET_USER_MEMORY_REGION, &hw_reg) < 0) {
+		pr_err("failed to flush hardware memory slot %u: %d\n",
+		       hw_reg.slot, errno);
+	} else {
+		pr_debug("successfully tore down hardware memory slot %u\n",
+			 hw_reg.slot);
+	}
 }
 
 /**
@@ -98,7 +134,8 @@ static int kvm_accel_init(struct modvm_accel *accel)
 	state->mem_slot_idx = 0;
 	accel->priv = state;
 
-	ret = modvm_mem_space_init(&accel->mem_space, kvm_mem_map_cb, state);
+	ret = modvm_mem_space_init(&accel->mem_space, kvm_mem_map_cb,
+				   kvm_mem_unmap_cb, state);
 	if (ret < 0) {
 		pr_err("failed to initialize physical memory tracking\n");
 		goto err_close_vm;

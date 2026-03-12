@@ -21,12 +21,23 @@ typedef int (*modvm_mem_map_cb_t)(struct modvm_mem_space *space,
 				  struct modvm_mem_region *region, void *data);
 
 /**
+ * typedef modvm_mem_unmap_cb_t - architecture-specific callback for tearing down mappings
+ * @space: the memory space context
+ * @region: the memory region to unmap from the hardware
+ * @data: architecture-specific context passed during initialization
+ */
+typedef void (*modvm_mem_unmap_cb_t)(struct modvm_mem_space *space,
+				     struct modvm_mem_region *region,
+				     void *data);
+
+/**
  * struct modvm_mem_region - contiguous block of guest physical memory
  * @node: linked list node for memory space iterations
  * @gpa: guest physical address
  * @size: size of the memory block in bytes
  * @hva: host virtual address backing this region
  * @flags: access permissions and memory traits
+ * @priv: opaque pointer for backend-specific tracking (e.g., hardware slot IDs)
  */
 struct modvm_mem_region {
 	struct list_head node;
@@ -34,6 +45,7 @@ struct modvm_mem_region {
 	size_t size;
 	void *hva;
 	uint32_t flags;
+	void *priv;
 };
 
 /**
@@ -42,7 +54,8 @@ struct modvm_mem_region {
  * @total_ram: aggregate size of available memory in bytes
  * @host_page_size: native page size of the underlying operating system
  * @map_cb: hook to notify hypervisor of new mappings
- * @map_data: private context for the mapping hook
+ * @unmap_cb: hook to notify hypervisor of mapping removal
+ * @map_data: private context for the mapping hooks
  */
 struct modvm_mem_space {
 	struct list_head regions;
@@ -50,14 +63,14 @@ struct modvm_mem_space {
 	size_t host_page_size;
 
 	modvm_mem_map_cb_t map_cb;
+	modvm_mem_unmap_cb_t unmap_cb;
 	void *map_data;
 };
 
 int modvm_mem_space_init(struct modvm_mem_space *space,
-			 modvm_mem_map_cb_t map_cb, void *data);
+			 modvm_mem_map_cb_t map_cb,
+			 modvm_mem_unmap_cb_t unmap_cb, void *data);
 void modvm_mem_space_destroy(struct modvm_mem_space *space);
-int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
-			 size_t size, uint32_t flags);
 void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, uint64_t gpa);
 
 #endif /* MODVM_CORE_MEMORY_H */

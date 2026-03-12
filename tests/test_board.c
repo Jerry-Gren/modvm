@@ -46,7 +46,7 @@ static int mock_board_init(struct modvm_ctx *ctx)
 	struct mock_irq_route *route;
 	int ret;
 
-	ret = modvm_mem_region_add(&ctx->accel.mem_space, 0x0000, 4096, 0);
+	ret = modvm_accel_map_ram(&ctx->accel, 0x0000, 4096, 0);
 	if (ret < 0)
 		return ret;
 
@@ -119,16 +119,16 @@ static int mock_board_reset(struct modvm_ctx *ctx)
 	pr_info("injected %zu bytes of machine code into guest memory\n",
 		sizeof(fw_payload));
 
-	ret = modvm_vcpu_get_regs(ctx->vcpus[0], MODVM_REG_CLASS_X86_SREGS,
-				  &sregs, sizeof(sregs));
+	ret = modvm_vcpu_get_regs(ctx->vcpus[0], MODVM_REG_SREGS, &sregs,
+				  sizeof(sregs));
 	if (ret < 0)
 		return ret;
 
 	sregs.cs.selector = 0x0000;
 	sregs.cs.base = 0x00000000;
 
-	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_CLASS_X86_SREGS,
-				  &sregs, sizeof(sregs));
+	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_SREGS, &sregs,
+				  sizeof(sregs));
 	if (ret < 0)
 		return ret;
 
@@ -136,7 +136,7 @@ static int mock_board_reset(struct modvm_ctx *ctx)
 	regs.rip = 0x0000;
 	regs.rflags = 0x02;
 
-	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_CLASS_X86_GPR, &regs,
+	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_GPR, &regs,
 				  sizeof(regs));
 	if (ret < 0)
 		return ret;

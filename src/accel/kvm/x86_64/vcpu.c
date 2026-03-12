@@ -165,7 +165,7 @@ int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
 {
 	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 
-	if (reg_class == MODVM_REG_CLASS_X86_SREGS) {
+	if (reg_class == MODVM_REG_SREGS) {
 		struct kvm_sregs k_sregs;
 		struct modvm_x86_sregs *m_sregs = buf;
 
@@ -194,7 +194,7 @@ int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
 		return 0;
 	}
 
-	if (reg_class == MODVM_REG_CLASS_X86_GPR) {
+	if (reg_class == MODVM_REG_GPR) {
 		struct kvm_regs k_regs;
 		struct modvm_x86_regs *m_regs = buf;
 
@@ -243,7 +243,7 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 {
 	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 
-	if (reg_class == MODVM_REG_CLASS_X86_SREGS) {
+	if (reg_class == MODVM_REG_SREGS) {
 		struct kvm_sregs k_sregs;
 		const struct modvm_x86_sregs *m_sregs = buf;
 
@@ -276,7 +276,7 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 		return 0;
 	}
 
-	if (reg_class == MODVM_REG_CLASS_X86_GPR) {
+	if (reg_class == MODVM_REG_GPR) {
 		struct kvm_regs k_regs;
 		const struct modvm_x86_regs *m_regs = buf;
 

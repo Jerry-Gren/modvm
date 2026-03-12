@@ -13,6 +13,8 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
 
+#include <modvm/internal/loader.h>
+
 #undef pr_fmt
 #define pr_fmt(fmt) "linux_loader: " fmt
 
@@ -292,8 +294,7 @@ static int linux_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 	struct modvm_x86_regs regs;
 	int ret;
 
-	ret = modvm_vcpu_get_regs(vcpu, MODVM_REG_CLASS_X86_SREGS, &sregs,
-				  sizeof(sregs));
+	ret = modvm_vcpu_get_regs(vcpu, MODVM_REG_SREGS, &sregs, sizeof(sregs));
 	if (WARN_ON(ret < 0))
 		return ret;
 
@@ -329,8 +330,7 @@ static int linux_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 	sregs.gs = sregs.ds;
 	sregs.ss = sregs.ds;
 
-	ret = modvm_vcpu_set_regs(vcpu, MODVM_REG_CLASS_X86_SREGS, &sregs,
-				  sizeof(sregs));
+	ret = modvm_vcpu_set_regs(vcpu, MODVM_REG_SREGS, &sregs, sizeof(sregs));
 	if (WARN_ON(ret < 0))
 		return ret;
 
@@ -339,8 +339,7 @@ static int linux_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 	regs.rip = lctx->entry_pc;
 	regs.rsi = lctx->zero_page;
 
-	ret = modvm_vcpu_set_regs(vcpu, MODVM_REG_CLASS_X86_GPR, &regs,
-				  sizeof(regs));
+	ret = modvm_vcpu_set_regs(vcpu, MODVM_REG_GPR, &regs, sizeof(regs));
 	if (WARN_ON(ret < 0))
 		return ret;
 

@@ -10,6 +10,8 @@
 #include <modvm/utils/err.h>
 #include <modvm/utils/compiler.h>
 
+#include "internal.h"
+
 #undef pr_fmt
 #define pr_fmt(fmt) "memory: " fmt
 
@@ -17,12 +19,14 @@
  * modvm_mem_space_init - initialize a fresh physical memory controller
  * @space: the memory space context to initialize
  * @map_cb: function invoked when a new memory region needs hardware mapping
- * @data: private context data passed to the map_cb
+ * @unmap_cb: function invoked to tear down hardware mappings
+ * @data: private context data passed to the mapping hooks
  *
  * Return: 0 on success, or a negative error code.
  */
 int modvm_mem_space_init(struct modvm_mem_space *space,
-			 modvm_mem_map_cb_t map_cb, void *data)
+			 modvm_mem_map_cb_t map_cb,
+			 modvm_mem_unmap_cb_t unmap_cb, void *data)
 {
 	if (WARN_ON(!space))
 		return -EINVAL;
@@ -31,6 +35,7 @@ int modvm_mem_space_init(struct modvm_mem_space *space,
 	space->total_ram = 0;
 	space->host_page_size = os_page_size();
 	space->map_cb = map_cb;
+	space->unmap_cb = unmap_cb;
 	space->map_data = data;
 
 	return 0;
@@ -171,6 +176,11 @@ void modvm_mem_space_destroy(struct modvm_mem_space *space)
 	list_for_each_entry_safe(pos, n, &space->regions, node)
 	{
 		list_del(&pos->node);
+
+		/* Explicitly instruct the hardware to tear down EPT/NPT mappings */
+		if (likely(space->unmap_cb))
+			space->unmap_cb(space, pos, space->map_data);
+
 		os_page_free(pos->hva, pos->size);
 		free(pos);
 	}

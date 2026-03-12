@@ -10,6 +10,8 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/log.h>
 
+#include <modvm/internal/loader.h>
+
 #undef pr_fmt
 #define pr_fmt(fmt) "raw_loader: " fmt
 
@@ -33,8 +35,7 @@ static int raw_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 
 	(void)priv;
 
-	ret = modvm_vcpu_get_regs(vcpu, MODVM_REG_CLASS_X86_SREGS, &sregs,
-				  sizeof(sregs));
+	ret = modvm_vcpu_get_regs(vcpu, MODVM_REG_SREGS, &sregs, sizeof(sregs));
 	if (WARN_ON(ret < 0))
 		return ret;
 
@@ -42,8 +43,7 @@ static int raw_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 	sregs.cs.selector = 0xF000;
 	sregs.cs.base = 0xFFFF0000;
 
-	ret = modvm_vcpu_set_regs(vcpu, MODVM_REG_CLASS_X86_SREGS, &sregs,
-				  sizeof(sregs));
+	ret = modvm_vcpu_set_regs(vcpu, MODVM_REG_SREGS, &sregs, sizeof(sregs));
 	if (WARN_ON(ret < 0))
 		return ret;
 
@@ -51,8 +51,7 @@ static int raw_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 	regs.rip = 0xFFF0;
 	regs.rflags = 0x02;
 
-	return modvm_vcpu_set_regs(vcpu, MODVM_REG_CLASS_X86_GPR, &regs,
-				   sizeof(regs));
+	return modvm_vcpu_set_regs(vcpu, MODVM_REG_GPR, &regs, sizeof(regs));
 }
 
 static const struct modvm_loader_class raw_class = {

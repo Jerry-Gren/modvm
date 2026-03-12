@@ -26,7 +26,4 @@ void modvm_loader_class_register(const struct modvm_loader_class *cls);
 int modvm_loader_execute(struct modvm_ctx *ctx, const char *name,
 			 const char *opts);
 
-int modvm_loader_load_raw(struct modvm_mem_space *space, const char *path,
-			  uint64_t gpa);
-
 #endif /* MODVM_CORE_LOADER_H */

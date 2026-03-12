@@ -16,6 +16,8 @@
 #include <modvm/utils/container_of.h>
 #include <modvm/utils/compiler.h>
 
+#include <modvm/internal/thread.h>
+
 #include "internal.h"
 
 #undef pr_fmt

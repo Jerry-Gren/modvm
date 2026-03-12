@@ -12,6 +12,8 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
 
+#include <modvm/internal/thread.h>
+
 struct os_thread {
 	pthread_t handle;
 };

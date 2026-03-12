@@ -8,6 +8,8 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 
+#include <modvm/internal/loader.h>
+
 #undef pr_fmt
 #define pr_fmt(fmt) "loader: " fmt
 

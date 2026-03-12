@@ -26,9 +26,6 @@ struct modvm_res_pool {
 };
 
 void modvm_res_pool_init(struct modvm_res_pool *pool, void *owner);
-void *modvm_res_alloc(modvm_res_release_t release, size_t size);
-void modvm_res_add(struct modvm_res_pool *pool, void *res);
-void modvm_res_free(struct modvm_res_pool *pool, void *res);
 void modvm_res_release_all(struct modvm_res_pool *pool);
 
 #endif /* MODVM_CORE_RES_POOL_H */

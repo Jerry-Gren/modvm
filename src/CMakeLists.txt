@@ -18,7 +18,14 @@ file(GLOB BOARD_SOURCES CONFIGURE_DEPENDS "hw/boards/${MODVM_ARCH}/*.c")
 file(GLOB ACCEL_SOURCES CONFIGURE_DEPENDS "accel/kvm/*.c")
 file(GLOB ACCEL_ARCH_SOURCES CONFIGURE_DEPENDS "accel/kvm/${MODVM_ARCH}/*.c")
 
-file(GLOB LOADER_SOURCES CONFIGURE_DEPENDS "loader/*.c")
+# Dynamically load Boot Protocols based on the active architecture
+if(MODVM_ARCH STREQUAL "x86_64")
+    file(GLOB LOADER_SOURCES CONFIGURE_DEPENDS "loader/*_x86.c")
+elseif(MODVM_ARCH STREQUAL "aarch64")
+    file(GLOB LOADER_SOURCES CONFIGURE_DEPENDS "loader/*_arm64.c")
+else()
+    set(LOADER_SOURCES "")
+endif()
 
 # Build an OBJECT library
 # Using an OBJECT library allows us to compile these files into object files 

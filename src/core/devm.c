@@ -8,6 +8,8 @@
 #include <modvm/core/res_pool.h>
 #include <modvm/utils/bug.h>
 
+#include "internal.h"
+
 struct devm_action_data {
 	void (*action)(void *);
 	void *data;

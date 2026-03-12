@@ -57,6 +57,8 @@ const struct modvm_accel_backend *modvm_accel_backend_find(const char *name);
 int modvm_accel_init(struct modvm_accel *accel, const char *name);
 int modvm_accel_setup_irqchip(struct modvm_accel *accel);
 int modvm_accel_set_irq(struct modvm_accel *accel, uint32_t gsi, int level);
+int modvm_accel_map_ram(struct modvm_accel *accel, uint64_t gpa, size_t size,
+			uint32_t flags);
 void modvm_accel_destroy(struct modvm_accel *accel);
 
 #endif /* MODVM_CORE_ACCEL_H */

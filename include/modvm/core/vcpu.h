@@ -9,13 +9,13 @@ struct modvm_accel;
 struct modvm_vcpu;
 
 /**
- * enum modvm_reg_class - identifiers for architectural register groups
- * @MODVM_REG_CLASS_X86_GPR: x86 general purpose registers
- * @MODVM_REG_CLASS_X86_SREGS: x86 special and segment registers
+ * enum modvm_reg_class - generic identifiers for architectural register groups
+ * @MODVM_REG_GPR: general purpose registers (e.g., RAX on x86, X0 on ARM)
+ * @MODVM_REG_SREGS: special and system control registers (e.g., CR0 on x86, SCTLR_EL1 on ARM)
  */
 enum modvm_reg_class {
-	MODVM_REG_CLASS_X86_GPR,
-	MODVM_REG_CLASS_X86_SREGS,
+	MODVM_REG_GPR,
+	MODVM_REG_SREGS,
 };
 
 /**

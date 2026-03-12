@@ -64,15 +64,14 @@ static int pc_board_init(struct modvm_ctx *ctx)
 		low_ram = ram_size;
 	}
 
-	ret = modvm_mem_region_add(&ctx->accel.mem_space, 0x00000000, low_ram,
-				   MODVM_MEM_EXEC);
+	ret = modvm_accel_map_ram(&ctx->accel, 0x00000000, low_ram,
+				  MODVM_MEM_EXEC);
 	if (ret < 0)
 		return ret;
 
 	if (high_ram > 0) {
-		ret = modvm_mem_region_add(&ctx->accel.mem_space,
-					   PC_HIGH_RAM_BASE, high_ram,
-					   MODVM_MEM_EXEC);
+		ret = modvm_accel_map_ram(&ctx->accel, PC_HIGH_RAM_BASE,
+					  high_ram, MODVM_MEM_EXEC);
 		if (ret < 0)
 			return ret;
 	}
