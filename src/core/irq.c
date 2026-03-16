@@ -12,11 +12,6 @@ struct modvm_irq {
 	void *data;
 };
 
-static void irq_release_action(struct modvm_irq *irq)
-{
-	free(irq);
-}
-
 /**
  * modvm_devm_irq_alloc - allocate a device-managed interrupt line
  * @dev: the device to manage this interrupt's lifecycle
@@ -32,24 +27,16 @@ struct modvm_irq *modvm_devm_irq_alloc(struct modvm_device *dev,
 				       modvm_irq_cb_t cb, void *data)
 {
 	struct modvm_irq *irq;
-	int ret;
 
 	if (WARN_ON(!dev || !cb))
 		return NULL;
 
-	irq = calloc(1, sizeof(*irq));
+	irq = modvm_devm_zalloc(dev, sizeof(*irq));
 	if (unlikely(!irq))
 		return NULL;
 
 	irq->cb = cb;
 	irq->data = data;
-
-	/* Leverages the type-safe devm_add_action macro */
-	ret = modvm_devm_add_action(dev, irq_release_action, irq);
-	if (unlikely(ret < 0)) {
-		free(irq);
-		return NULL;
-	}
 
 	return irq;
 }

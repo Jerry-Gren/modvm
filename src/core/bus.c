@@ -16,7 +16,6 @@ static void bus_region_release(struct modvm_bus_region *reg)
 {
 	list_del(&reg->node);
 	pr_debug("automatically unregistered bus region at 0x%lx\n", reg->base);
-	free(reg);
 }
 
 /**
@@ -55,7 +54,7 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 		}
 	}
 
-	reg = calloc(1, sizeof(*reg));
+	reg = modvm_devm_zalloc(dev, sizeof(*reg));
 	if (unlikely(!reg))
 		return -ENOMEM;
 
@@ -69,7 +68,6 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 	ret = modvm_devm_add_action(dev, bus_region_release, reg);
 	if (unlikely(ret < 0)) {
 		list_del(&reg->node);
-		free(reg);
 		return ret;
 	}
 
