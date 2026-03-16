@@ -162,15 +162,15 @@ static void test_bus_routing(void)
 	if (WARN_ON(ret != 0))
 		modvm_panic("bus failed to isolate pio and mmio spaces\n");
 
-	modvm_bus_dispatch_write(&mock_ctx, MODVM_BUS_PIO, 0x40, 500, 4);
+	modvm_bus_dispatch_write(&mock_ctx.bus, MODVM_BUS_PIO, 0x40, 500, 4);
 	if (WARN_ON(timer_ctx.ticks != 500))
 		modvm_panic("write routing failed to mutate state\n");
 
-	val = modvm_bus_dispatch_read(&mock_ctx, MODVM_BUS_PIO, 0x40, 4);
+	val = modvm_bus_dispatch_read(&mock_ctx.bus, MODVM_BUS_PIO, 0x40, 4);
 	if (WARN_ON(val != 500))
 		modvm_panic("read routing returned incorrect data\n");
 
-	val = modvm_bus_dispatch_read(&mock_ctx, MODVM_BUS_PIO, 0x3f8, 1);
+	val = modvm_bus_dispatch_read(&mock_ctx.bus, MODVM_BUS_PIO, 0x3f8, 1);
 	if (WARN_ON(val != ~0ULL))
 		modvm_panic("unmapped port failed floating bus constraint\n");
 

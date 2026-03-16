@@ -13,7 +13,6 @@
 #include <modvm/core/modvm.h>
 #include <modvm/utils/log.h>
 #include <modvm/os/thread.h>
-#include <modvm/utils/container_of.h>
 #include <modvm/utils/compiler.h>
 
 #include <modvm/internal/thread.h>
@@ -102,8 +101,7 @@ static void handle_mmio_exit(struct modvm_vcpu *vcpu)
 {
 	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 	struct kvm_run *run = state->run;
-	struct modvm_ctx *ctx =
-		container_of(vcpu->accel, struct modvm_ctx, accel);
+	struct modvm_bus *bus = vcpu->accel->bus;
 
 	uint64_t gpa = run->mmio.phys_addr;
 	uint8_t size = run->mmio.len;
@@ -112,9 +110,9 @@ static void handle_mmio_exit(struct modvm_vcpu *vcpu)
 
 	if (run->mmio.is_write) {
 		memcpy(&val, data, size);
-		modvm_bus_dispatch_write(ctx, MODVM_BUS_MMIO, gpa, val, size);
+		modvm_bus_dispatch_write(bus, MODVM_BUS_MMIO, gpa, val, size);
 	} else {
-		val = modvm_bus_dispatch_read(ctx, MODVM_BUS_MMIO, gpa, size);
+		val = modvm_bus_dispatch_read(bus, MODVM_BUS_MMIO, gpa, size);
 		memcpy(data, &val, size);
 	}
 }

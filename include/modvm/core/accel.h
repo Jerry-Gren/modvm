@@ -39,6 +39,7 @@ struct modvm_accel_backend {
  * struct modvm_accel - the virtualization engine context
  * @backend: the blueprint of the selected acceleration backend
  * @mem_space: physical memory controller managing guest mappings
+ * @bus: system bus topology for routing exits
  * @priv: opaque pointer to the underlying accelerator state
  * @is_running: thread-safe power state monitored by all executing processors
  * @init_mutex: synchronization lock for virtual processor startup phase
@@ -46,6 +47,7 @@ struct modvm_accel_backend {
 struct modvm_accel {
 	const struct modvm_accel_backend *backend;
 	struct modvm_mem_space mem_space;
+	struct modvm_bus *bus;
 	void *priv;
 	atomic_bool is_running;
 	struct os_mutex *init_mutex;
@@ -54,7 +56,8 @@ struct modvm_accel {
 void modvm_accel_backend_register(const struct modvm_accel_backend *backend);
 const struct modvm_accel_backend *modvm_accel_backend_find(const char *name);
 
-int modvm_accel_init(struct modvm_accel *accel, const char *name);
+int modvm_accel_init(struct modvm_accel *accel, const char *name,
+		     struct modvm_bus *bus);
 int modvm_accel_setup_irqchip(struct modvm_accel *accel);
 int modvm_accel_set_irq(struct modvm_accel *accel, uint32_t gsi, int level);
 int modvm_accel_map_ram(struct modvm_accel *accel, uint64_t gpa, size_t size,

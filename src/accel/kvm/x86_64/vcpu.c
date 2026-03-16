@@ -8,7 +8,6 @@
 #include <modvm/core/bus.h>
 #include <modvm/core/modvm.h>
 #include <modvm/arch/x86/regs.h>
-#include <modvm/utils/container_of.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 
@@ -324,8 +323,7 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 int modvm_kvm_arch_vcpu_handle_exit(struct modvm_vcpu *vcpu,
 				    struct kvm_run *run)
 {
-	struct modvm_ctx *ctx =
-		container_of(vcpu->accel, struct modvm_ctx, accel);
+	struct modvm_bus *bus = vcpu->accel->bus;
 	uint16_t port;
 	uint8_t size;
 	uint32_t count;
@@ -355,11 +353,11 @@ int modvm_kvm_arch_vcpu_handle_exit(struct modvm_vcpu *vcpu,
 					break;
 				}
 
-				modvm_bus_dispatch_write(ctx, MODVM_BUS_PIO,
+				modvm_bus_dispatch_write(bus, MODVM_BUS_PIO,
 							 port, val, size);
 			} else {
 				uint64_t val = modvm_bus_dispatch_read(
-					ctx, MODVM_BUS_PIO, port, size);
+					bus, MODVM_BUS_PIO, port, size);
 
 				switch (size) {
 				case 1:

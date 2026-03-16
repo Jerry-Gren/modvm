@@ -11,24 +11,26 @@
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
 #include <modvm/os/event_loop.h>
-#include <modvm/utils/container_of.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "modvm: " fmt
 
+struct vcpu_run_data {
+	struct modvm_ctx *ctx;
+	struct modvm_vcpu *vcpu;
+};
+
 static void *vcpu_thread_fn(void *data)
 {
-	struct modvm_vcpu *vcpu = data;
+	struct vcpu_run_data *run_data = data;
 	int ret;
 
-	ret = modvm_vcpu_run(vcpu);
+	ret = modvm_vcpu_run(run_data->vcpu);
 	if (ret < 0) {
-		struct modvm_ctx *ctx =
-			container_of(vcpu->accel, struct modvm_ctx, accel);
 		pr_err("fatal execution error on vcpu %d, initiating emergency shutdown\n",
-		       vcpu->id);
+		       run_data->vcpu->id);
 		/* This will notify other vcpus */
-		modvm_request_shutdown(ctx);
+		modvm_request_shutdown(run_data->ctx);
 	}
 
 	return NULL;
@@ -66,7 +68,7 @@ int modvm_init(struct modvm_ctx *ctx, const struct modvm_config *config)
 		return ret;
 	}
 
-	ret = modvm_accel_init(&ctx->accel, ctx->config.accel_name);
+	ret = modvm_accel_init(&ctx->accel, ctx->config.accel_name, &ctx->bus);
 	if (ret < 0) {
 		pr_err("failed to instantiate hardware acceleration engine\n");
 		return ret;
@@ -132,7 +134,9 @@ int modvm_init(struct modvm_ctx *ctx, const struct modvm_config *config)
  */
 int modvm_run(struct modvm_ctx *ctx)
 {
+	struct vcpu_run_data *run_data;
 	unsigned int i;
+	int ret;
 
 	if (WARN_ON(!ctx))
 		return -EINVAL;
@@ -144,18 +148,26 @@ int modvm_run(struct modvm_ctx *ctx)
 
 	if (ctx->config.board && ctx->config.board->ops &&
 	    ctx->config.board->ops->reset) {
-		int ret = ctx->config.board->ops->reset(ctx);
+		ret = ctx->config.board->ops->reset(ctx);
 		if (ret < 0) {
 			pr_err("board reset protocol and firmware injection failed\n");
 			return ret;
 		}
 	}
 
+	run_data = modvm_ctxm_zalloc(ctx,
+				     ctx->config.nr_vcpus * sizeof(*run_data));
+	if (!run_data)
+		return -ENOMEM;
+
 	os_mutex_lock(ctx->accel.init_mutex);
 
 	for (i = 0; i < ctx->config.nr_vcpus; i++) {
+		run_data[i].ctx = ctx;
+		run_data[i].vcpu = ctx->vcpus[i];
+
 		ctx->vcpu_threads[i] =
-			os_thread_create(vcpu_thread_fn, ctx->vcpus[i]);
+			os_thread_create(vcpu_thread_fn, &run_data[i]);
 
 		if (IS_ERR(ctx->vcpu_threads[i])) {
 			pr_err("failed to spawn kernel thread for vcpu %u\n",

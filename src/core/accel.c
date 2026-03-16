@@ -58,15 +58,17 @@ const struct modvm_accel_backend *modvm_accel_backend_find(const char *name)
  * modvm_accel_init - instantiate the virtual machine acceleration context
  * @accel: the hypervisor context state machine to populate
  * @name: the requested acceleration backend name
+ * @bus: the system bus pointer to bind for MMIO/PIO dispatches
  *
  * Binds the abstract accelerator object to a specific platform driver
  * and triggers its initialization sequence.
  *
  * Return: 0 on success, or a negative error code.
  */
-int modvm_accel_init(struct modvm_accel *accel, const char *name)
+int modvm_accel_init(struct modvm_accel *accel, const char *name,
+		     struct modvm_bus *bus)
 {
-	if (WARN_ON(!accel || !name))
+	if (WARN_ON(!accel || !name || !bus))
 		return -EINVAL;
 
 	accel->backend = modvm_accel_backend_find(name);
@@ -75,6 +77,8 @@ int modvm_accel_init(struct modvm_accel *accel, const char *name)
 		       name);
 		return -ENOENT;
 	}
+
+	accel->bus = bus;
 
 	if (WARN_ON(!accel->backend->ops || !accel->backend->ops->init))
 		return -ENOTSUP;

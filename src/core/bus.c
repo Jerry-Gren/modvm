@@ -80,14 +80,14 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 
 /**
  * modvm_bus_dispatch_read - route a read operation to the owning peripheral
- * @ctx: the overarching machine context
+ * @bus: the address space topology
  * @type: the target address space
  * @addr: the absolute requested address
  * @size: the size of the read request in bytes
  *
  * Return: the value supplied by the device, or ~0ULL if unmapped/out-of-bounds.
  */
-uint64_t modvm_bus_dispatch_read(struct modvm_ctx *ctx,
+uint64_t modvm_bus_dispatch_read(struct modvm_bus *bus,
 				 enum modvm_bus_type type, uint64_t addr,
 				 uint8_t size)
 {
@@ -95,11 +95,10 @@ uint64_t modvm_bus_dispatch_read(struct modvm_ctx *ctx,
 	struct list_head *list;
 	uint64_t offset;
 
-	if (WARN_ON(!ctx))
+	if (WARN_ON(!bus))
 		return ~0ULL;
 
-	list = (type == MODVM_BUS_PIO) ? &ctx->bus.pio_regions :
-					 &ctx->bus.mmio_regions;
+	list = (type == MODVM_BUS_PIO) ? &bus->pio_regions : &bus->mmio_regions;
 
 	list_for_each_entry(pos, list, node)
 	{
@@ -126,24 +125,23 @@ uint64_t modvm_bus_dispatch_read(struct modvm_ctx *ctx,
 
 /**
  * modvm_bus_dispatch_write - route a write operation to the owning peripheral
- * @ctx: the overarching machine context
+ * @bus: the address space topology
  * @type: the target address space
  * @addr: the absolute requested address
  * @val: the payload to write
  * @size: the size of the write request in bytes
  */
-void modvm_bus_dispatch_write(struct modvm_ctx *ctx, enum modvm_bus_type type,
+void modvm_bus_dispatch_write(struct modvm_bus *bus, enum modvm_bus_type type,
 			      uint64_t addr, uint64_t val, uint8_t size)
 {
 	struct modvm_bus_region *pos;
 	struct list_head *list;
 	uint64_t offset;
 
-	if (WARN_ON(!ctx))
+	if (WARN_ON(!bus))
 		return;
 
-	list = (type == MODVM_BUS_PIO) ? &ctx->bus.pio_regions :
-					 &ctx->bus.mmio_regions;
+	list = (type == MODVM_BUS_PIO) ? &bus->pio_regions : &bus->mmio_regions;
 
 	list_for_each_entry(pos, list, node)
 	{
