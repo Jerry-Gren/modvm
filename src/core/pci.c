@@ -12,10 +12,11 @@
 /**
  * modvm_pci_bus_init - initialize a virtual PCI bus topology
  * @bus: the PCI bus instance to initialize
+ * @mmio_base: ?
  * @set_irq_cb: host bridge hook for interrupt routing
  * @set_irq_data: host bridge closure data
  */
-void modvm_pci_bus_init(struct modvm_pci_bus *bus,
+void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
 			modvm_pci_set_irq_cb_t set_irq_cb, void *set_irq_data)
 {
 	if (WARN_ON(!bus))
@@ -24,6 +25,22 @@ void modvm_pci_bus_init(struct modvm_pci_bus *bus,
 	INIT_LIST_HEAD(&bus->devices);
 	bus->set_irq_cb = set_irq_cb;
 	bus->set_irq_data = set_irq_data;
+
+	bus->next_devfn = 8;
+	bus->mmio_alloc_cursor = mmio_base;
+}
+
+uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size)
+{
+	uint64_t base;
+
+	if (WARN_ON(!bus || size == 0))
+		return 0;
+
+	base = (bus->mmio_alloc_cursor + size - 1) & ~(size - 1);
+	bus->mmio_alloc_cursor = base + size;
+
+	return base;
 }
 
 /**
@@ -42,6 +59,15 @@ int modvm_pci_device_register(struct modvm_pci_bus *bus,
 
 	if (WARN_ON(!bus || !pci_dev))
 		return -EINVAL;
+
+	if (pci_dev->devfn == PCI_AUTO_DEVFN) {
+		if (WARN_ON(bus->next_devfn > 255)) {
+			pr_err("PCI bus exhausted, no available devfn\n");
+			return -ENOSPC;
+		}
+		pci_dev->devfn = bus->next_devfn;
+		bus->next_devfn += 8;
+	}
 
 	list_for_each_entry(pos, &bus->devices, node)
 	{

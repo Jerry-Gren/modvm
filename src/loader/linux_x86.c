@@ -12,6 +12,7 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/cmdline.h>
 
 #include <modvm/internal/loader.h>
 
@@ -49,49 +50,6 @@ struct linux_loader_ctx {
 	uint64_t entry_pc;
 	uint64_t zero_page;
 };
-
-/**
- * extract_opt - parse a simple key-value string option
- * @opts: comma-separated option string (e.g., "kernel=/path,append=foo")
- * @key: the key to search for (e.g., "kernel")
- *
- * Return: dynamically allocated string containing the value, or NULL if not found.
- * The caller is responsible for freeing the returned string.
- */
-static char *extract_opt(const char *opts, const char *key)
-{
-	const char *start;
-	const char *end;
-	char *val;
-	size_t len;
-	char search_key[32];
-
-	if (WARN_ON(!opts || !key))
-		return NULL;
-
-	snprintf(search_key, sizeof(search_key), "%s=", key);
-	start = strstr(opts, search_key);
-	if (!start)
-		return NULL;
-
-	start += strlen(search_key);
-
-	if (strcmp(key, "append") == 0) {
-		end = start + strlen(start);
-	} else {
-		end = strchr(start, ',');
-		if (!end)
-			end = start + strlen(start);
-	}
-
-	len = end - start;
-	val = malloc(len + 1);
-	if (val) {
-		strncpy(val, start, len);
-		val[len] = '\0';
-	}
-	return val;
-}
 
 /**
  * build_e820_table - synthesize the physical memory map for the guest kernel
@@ -146,17 +104,21 @@ static int build_e820_table(struct modvm_ctx *ctx, uint8_t *zero_page)
  * @opts: configuration string provided by the user
  * @out_priv: output pointer for the opaque loader context
  *
+ * Parses the Linux boot protocol header, loads the kernel payload,
+ * optionally loads the initrd, and builds the zero page. Employs a single
+ * unified error handling path to strictly prevent resource leakage.
+ *
  * Return: 0 on success, or a negative error code.
  */
 static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 			     void **out_priv)
 {
 	struct linux_loader_ctx *lctx;
-	char *kernel_path;
-	char *cmdline;
-	char *initrd_path;
-	FILE *fp;
-	FILE *rd_fp;
+	char *kernel_path = NULL;
+	char *cmdline = NULL;
+	char *initrd_path = NULL;
+	FILE *fp = NULL;
+	FILE *rd_fp = NULL;
 	uint8_t *hva_zero_page;
 	uint8_t *hva_kernel;
 	uint8_t *hva_cmdline;
@@ -169,43 +131,39 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 	long rd_size;
 	size_t payload_size;
 	uint64_t initrd_gpa;
+	int ret = 0;
 
-	kernel_path = extract_opt(opts, "kernel");
-	cmdline = extract_opt(opts, "append");
-	initrd_path = extract_opt(opts, "initrd");
+	kernel_path = cmdline_extract_opt(opts, "kernel");
+	cmdline = cmdline_extract_opt(opts, "append");
+	initrd_path = cmdline_extract_opt(opts, "initrd");
 
 	if (WARN_ON(!kernel_path)) {
 		pr_err("linux protocol strictly requires 'kernel=<path>' option\n");
-		free(cmdline);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_free_opts;
 	}
 
 	fp = fopen(kernel_path, "rb");
 	if (!fp) {
 		pr_err("failed to acquire bzImage handle: %s (errno: %d)\n",
 		       kernel_path, errno);
-		free(kernel_path);
-		free(cmdline);
-		return -ENOENT;
+		ret = -ENOENT;
+		goto err_free_opts;
 	}
 
 	if (fread(header_buf, 1, sizeof(header_buf), fp) !=
 	    sizeof(header_buf)) {
 		pr_err("failed to read setup header from bzImage\n");
-		fclose(fp);
-		free(kernel_path);
-		free(cmdline);
-		return -EIO;
+		ret = -EIO;
+		goto err_close_kernel;
 	}
 
 	magic = *(uint32_t *)(header_buf + SETUP_MAGIC_OFFSET);
 	if (magic != LINUX_MAGIC_HDR) {
 		pr_err("invalid Linux magic signature: expected 0x%x, got 0x%x\n",
 		       LINUX_MAGIC_HDR, magic);
-		fclose(fp);
-		free(kernel_path);
-		free(cmdline);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_close_kernel;
 	}
 
 	setup_sects = *(uint8_t *)(header_buf + SETUP_SECTS_OFFSET);
@@ -217,10 +175,8 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 	file_size = ftell(fp);
 	if (file_size < setup_size) {
 		pr_err("corrupted bzImage: file size smaller than setup data\n");
-		fclose(fp);
-		free(kernel_path);
-		free(cmdline);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto err_close_kernel;
 	}
 
 	hva_zero_page =
@@ -230,10 +186,8 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 
 	if (!hva_zero_page || !hva_kernel || !hva_cmdline) {
 		pr_err("failed to resolve guest physical memory for Linux injection\n");
-		fclose(fp);
-		free(kernel_path);
-		free(cmdline);
-		return -EFAULT;
+		ret = -EFAULT;
+		goto err_close_kernel;
 	}
 
 	memset(hva_zero_page, 0, 4096);
@@ -258,10 +212,8 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 	payload_size = file_size - setup_size;
 	if (fread(hva_kernel, 1, payload_size, fp) != payload_size) {
 		pr_err("short read while streaming kernel payload\n");
-		fclose(fp);
-		free(kernel_path);
-		free(cmdline);
-		return -EIO;
+		ret = -EIO;
+		goto err_close_kernel;
 	}
 
 	if (initrd_path) {
@@ -269,11 +221,8 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 		if (!rd_fp) {
 			pr_err("failed to acquire initrd handle: %s (errno: %d)\n",
 			       initrd_path, errno);
-			fclose(fp);
-			free(kernel_path);
-			free(cmdline);
-			free(initrd_path);
-			return -ENOENT;
+			ret = -ENOENT;
+			goto err_close_kernel;
 		}
 
 		fseek(rd_fp, 0, SEEK_END);
@@ -288,23 +237,15 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 							  initrd_gpa);
 			if (!hva_initrd) {
 				pr_err("failed to resolve guest memory for initrd\n");
-				fclose(rd_fp);
-				fclose(fp);
-				free(kernel_path);
-				free(cmdline);
-				free(initrd_path);
-				return -EFAULT;
+				ret = -EFAULT;
+				goto err_close_initrd;
 			}
 
 			if (fread(hva_initrd, 1, rd_size, rd_fp) !=
 			    (size_t)rd_size) {
 				pr_err("short read while streaming initrd payload\n");
-				fclose(rd_fp);
-				fclose(fp);
-				free(kernel_path);
-				free(cmdline);
-				free(initrd_path);
-				return -EIO;
+				ret = -EIO;
+				goto err_close_initrd;
 			}
 
 			*(uint32_t *)(hva_zero_page + SETUP_RAMDISK_IMAGE) =
@@ -317,15 +258,13 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 		}
 
 		fclose(rd_fp);
-		free(initrd_path);
+		rd_fp = NULL;
 	}
 
 	lctx = malloc(sizeof(*lctx));
 	if (!lctx) {
-		fclose(fp);
-		free(kernel_path);
-		free(cmdline);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_close_kernel;
 	}
 
 	lctx->entry_pc = KERNEL_GPA;
@@ -338,7 +277,20 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 	fclose(fp);
 	free(kernel_path);
 	free(cmdline);
+	free(initrd_path);
 	return 0;
+
+err_close_initrd:
+	if (rd_fp)
+		fclose(rd_fp);
+err_close_kernel:
+	if (fp)
+		fclose(fp);
+err_free_opts:
+	free(kernel_path);
+	free(cmdline);
+	free(initrd_path);
+	return ret;
 }
 
 /**

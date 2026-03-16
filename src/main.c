@@ -57,6 +57,7 @@ int main(int argc, char **argv)
 		.nr_vcpus = 1,
 		.loader_name = "raw-x86",
 		.loader_opts = NULL,
+		.board_opts = NULL,
 		.board = NULL,
 		.console = NULL,
 	};

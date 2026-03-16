@@ -12,6 +12,9 @@
 #define PCI_INTERRUPT_LINE 0x3C
 #define PCI_INTERRUPT_PIN 0x3D
 
+#define PCI_AUTO_DEVFN 0xFF
+#define PCI_AUTO_MMIO 0ULL
+
 struct modvm_pci_device;
 struct modvm_pci_bus;
 
@@ -72,10 +75,14 @@ struct modvm_pci_bus {
 	struct list_head devices;
 	modvm_pci_set_irq_cb_t set_irq_cb;
 	void *set_irq_data;
+
+	uint8_t next_devfn;
+	uint64_t mmio_alloc_cursor;
 };
 
-void modvm_pci_bus_init(struct modvm_pci_bus *bus,
+void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
 			modvm_pci_set_irq_cb_t set_irq_cb, void *set_irq_data);
+uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size);
 int modvm_pci_device_register(struct modvm_pci_bus *bus,
 			      struct modvm_pci_device *pci_dev);
 uint32_t modvm_pci_bus_read_config(struct modvm_pci_bus *bus, uint8_t devfn,

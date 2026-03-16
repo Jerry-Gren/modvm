@@ -376,6 +376,16 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 
 	ctx->vdev = vdev;
 	ctx->bar0_size = (uint32_t)os_page_size();
+
+	if (plat->bar0_base == PCI_AUTO_MMIO) {
+		plat->bar0_base =
+			modvm_pci_bus_alloc_mmio(plat->pci_bus, ctx->bar0_size);
+		if (!plat->bar0_base) {
+			pr_err("failed to allocate mmio window for virtio-pci device\n");
+			return -ENOSPC;
+		}
+	}
+
 	ctx->pci_dev.parent_dev = dev;
 	ctx->pci_dev.ops = &virtio_pci_config_ops;
 	ctx->pci_dev.priv = ctx;

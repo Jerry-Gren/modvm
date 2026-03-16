@@ -10,6 +10,7 @@
 #include <modvm/core/devm.h>
 #include <modvm/core/ctxm.h>
 #include <modvm/core/loader.h>
+#include <modvm/core/pci.h>
 #include <modvm/hw/serial.h>
 #include <modvm/core/irq.h>
 #include <modvm/backends/block/posix.h>
@@ -17,6 +18,7 @@
 #include <modvm/hw/virtio/virtio.h>
 #include <modvm/hw/virtio/virtio_pci.h>
 #include <modvm/hw/virtio/virtio_blk.h>
+#include <modvm/utils/cmdline.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
@@ -44,34 +46,58 @@ static void pc_irq_handler(void *data, int level)
 	modvm_accel_set_irq(route->accel, route->gsi, level);
 }
 
-static char *board_extract_opt(const char *opts, const char *key)
+static int pc_board_add_virtio_blk(struct modvm_ctx *ctx,
+				   struct modvm_pci_bus *pci_bus)
 {
-	const char *start;
-	const char *end;
-	char *val;
-	size_t len;
-	char search_key[32];
+	char *drive_path;
+	struct modvm_block *blk_backend;
+	struct virtio_device *vdev_blk;
+	struct modvm_device *vpci_dev;
+	struct virtio_pci_pdata vpci_pdata;
+	int ret;
 
-	if (WARN_ON(!opts || !key))
-		return NULL;
+	if (!ctx->config.board_opts)
+		return 0;
 
-	snprintf(search_key, sizeof(search_key), "%s=", key);
-	start = strstr(opts, search_key);
-	if (!start)
-		return NULL;
+	drive_path = cmdline_extract_opt(ctx->config.board_opts, "drive");
+	if (!drive_path)
+		return 0;
 
-	start += strlen(search_key);
-	end = strchr(start, ',');
-	if (!end)
-		end = start + strlen(start);
+	blk_backend = modvm_block_posix_create(drive_path, false);
+	free(drive_path);
 
-	len = end - start;
-	val = malloc(len + 1);
-	if (val) {
-		strncpy(val, start, len);
-		val[len] = '\0';
+	if (!blk_backend)
+		return -EIO;
+
+	ret = modvm_ctxm_add_action(ctx, modvm_block_posix_destroy,
+				    blk_backend);
+	if (ret < 0) {
+		modvm_block_posix_destroy(blk_backend);
+		return ret;
 	}
-	return val;
+
+	vdev_blk = virtio_blk_create(ctx, blk_backend);
+	if (!vdev_blk)
+		return -ENOMEM;
+
+	vpci_dev = modvm_device_alloc(ctx, "virtio-pci");
+	if (!vpci_dev)
+		return -ENOMEM;
+
+	vpci_pdata.pci_bus = pci_bus;
+	vpci_pdata.vdev = vdev_blk;
+	vpci_pdata.devfn = PCI_AUTO_DEVFN;
+	vpci_pdata.bar0_base = PCI_AUTO_MMIO;
+	vpci_pdata.interrupt_pin = 1;
+	vpci_pdata.interrupt_line = 10;
+
+	ret = modvm_device_add(vpci_dev, &vpci_pdata);
+	if (ret < 0) {
+		modvm_device_put(vpci_dev);
+		return ret;
+	}
+
+	return 0;
 }
 
 /**
@@ -93,7 +119,6 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	uint64_t ram_size = ctx->config.ram_size;
 	uint64_t low_ram;
 	uint64_t high_ram = 0;
-	char *drive_path = NULL;
 	int ret, i;
 
 	if (ram_size >= PC_LOW_RAM_MAX) {
@@ -154,6 +179,7 @@ static int pc_board_init(struct modvm_ctx *ctx)
 
 	bridge_pdata.config_addr_port = 0xCF8;
 	bridge_pdata.config_data_port = 0xCFC;
+	bridge_pdata.mmio_base = 0x0C000000;
 	bridge_pdata.out_bus = &pci_root_bus;
 
 	for (i = 0; i < 4; i++) {
@@ -180,60 +206,9 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	/* From here on, PCI Bridge is managed by ctx->devices */
 
 	/* Virtio Block Device (Optional) */
-	if (ctx->config.board_opts)
-		drive_path = board_extract_opt(ctx->config.board_opts, "drive");
-
-	if (drive_path) {
-		struct modvm_block *blk_backend;
-		struct virtio_device *vdev_blk;
-		struct modvm_device *vpci_dev;
-		struct virtio_pci_pdata vpci_pdata;
-
-		blk_backend = modvm_block_posix_create(drive_path, false);
-		if (!blk_backend) {
-			ret = -EIO;
-			free(drive_path);
-			return ret;
-		}
-
-		ret = modvm_ctxm_add_action(ctx, modvm_block_posix_destroy,
-					    blk_backend);
-		if (ret < 0) {
-			modvm_block_posix_destroy(blk_backend);
-			free(drive_path);
-			return ret;
-		}
-
-		vdev_blk = virtio_blk_create(ctx, blk_backend);
-		if (!vdev_blk) {
-			ret = -ENOMEM;
-			free(drive_path);
-			return ret;
-		}
-
-		vpci_dev = modvm_device_alloc(ctx, "virtio-pci");
-		if (!vpci_dev) {
-			ret = -ENOMEM;
-			free(drive_path);
-			return ret;
-		}
-
-		vpci_pdata.pci_bus = pci_root_bus;
-		vpci_pdata.vdev = vdev_blk;
-		vpci_pdata.devfn = 0x08;
-		vpci_pdata.interrupt_pin = 1;
-		vpci_pdata.interrupt_line = 10;
-		vpci_pdata.bar0_base = 0x0C000000;
-
-		ret = modvm_device_add(vpci_dev, &vpci_pdata);
-		if (ret < 0) {
-			modvm_device_put(vpci_dev);
-			free(drive_path);
-			return ret;
-		}
-
-		free(drive_path);
-	}
+	ret = pc_board_add_virtio_blk(ctx, pci_root_bus);
+	if (ret < 0)
+		return ret;
 
 	/* Debug Exit Device */
 	exit_dev = modvm_device_alloc(ctx, "debug-exit");

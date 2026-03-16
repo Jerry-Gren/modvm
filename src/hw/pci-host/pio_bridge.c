@@ -126,7 +126,8 @@ static int pio_bridge_instantiate(struct modvm_device *dev, void *pdata)
 		return -ENOMEM;
 
 	/* Bind the interrupt routing closure to the abstract bus */
-	modvm_pci_bus_init(&ctx->bus, pio_bridge_set_irq_cb, ctx);
+	modvm_pci_bus_init(&ctx->bus, plat->mmio_base, pio_bridge_set_irq_cb,
+			   ctx);
 	ctx->config_addr = 0;
 
 	for (i = 0; i < 4; i++)
