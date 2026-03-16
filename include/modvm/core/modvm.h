@@ -40,6 +40,7 @@ struct modvm_event_loop {
  * @nr_vcpus: number of virtual processors to allocate
  * @loader_name: boot protocol plugin identifier (e.g., "linux-x86", "raw-x86")
  * @loader_opts: protocol-specific configuration string (e.g., "kernel=/boot/vmlinuz")
+ * @board_opts: ?
  * @board: selected motherboard topology blueprint
  * @console: character device backend for the primary system console
  */
@@ -50,6 +51,7 @@ struct modvm_config {
 	unsigned int nr_vcpus;
 	const char *loader_name;
 	const char *loader_opts;
+	const char *board_opts;
 	const struct modvm_board *board;
 	struct modvm_chardev *console;
 };

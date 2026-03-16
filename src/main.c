@@ -32,6 +32,8 @@ static void print_usage(const char *prog_name)
 		"  -loader <name>      select boot protocol plugin (default: raw-x86)\n");
 	fprintf(stderr,
 		"  -loader-opts <opts> pass configuration string to the loader plugin\n");
+	fprintf(stderr,
+		"  -board-opts <opts>  pass configuration string to the board (e.g., drive=img)\n");
 	fprintf(stderr, "  -h                  show this help message\n");
 }
 
@@ -83,6 +85,9 @@ int main(int argc, char **argv)
 		} else if (strcmp(argv[i], "-loader-opts") == 0 &&
 			   i + 1 < argc) {
 			cfg.loader_opts = argv[++i];
+		} else if (strcmp(argv[i], "-board-opts") == 0 &&
+			   i + 1 < argc) {
+			cfg.board_opts = argv[++i];
 		} else {
 			pr_err("unknown or incomplete option: %s\n", argv[i]);
 			print_usage(argv[0]);

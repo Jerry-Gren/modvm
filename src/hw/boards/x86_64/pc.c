@@ -1,14 +1,22 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <errno.h>
 
 #include <modvm/core/board.h>
 #include <modvm/core/modvm.h>
 #include <modvm/core/device.h>
 #include <modvm/core/devm.h>
+#include <modvm/core/ctxm.h>
 #include <modvm/core/loader.h>
 #include <modvm/hw/serial.h>
 #include <modvm/core/irq.h>
+#include <modvm/backends/block/posix.h>
+#include <modvm/hw/pci-host/pio_bridge.h>
+#include <modvm/hw/virtio/virtio.h>
+#include <modvm/hw/virtio/virtio_pci.h>
+#include <modvm/hw/virtio/virtio_blk.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
@@ -36,6 +44,36 @@ static void pc_irq_handler(void *data, int level)
 	modvm_accel_set_irq(route->accel, route->gsi, level);
 }
 
+static char *board_extract_opt(const char *opts, const char *key)
+{
+	const char *start;
+	const char *end;
+	char *val;
+	size_t len;
+	char search_key[32];
+
+	if (WARN_ON(!opts || !key))
+		return NULL;
+
+	snprintf(search_key, sizeof(search_key), "%s=", key);
+	start = strstr(opts, search_key);
+	if (!start)
+		return NULL;
+
+	start += strlen(search_key);
+	end = strchr(start, ',');
+	if (!end)
+		end = start + strlen(start);
+
+	len = end - start;
+	val = malloc(len + 1);
+	if (val) {
+		strncpy(val, start, len);
+		val[len] = '\0';
+	}
+	return val;
+}
+
 /**
  * pc_board_init - assemble the legacy x86 personal computer topology
  * @ctx: the context instance being constructed
@@ -47,16 +85,17 @@ static void pc_irq_handler(void *data, int level)
  */
 static int pc_board_init(struct modvm_ctx *ctx)
 {
-	struct modvm_device *uart;
-	struct modvm_device *exit_dev;
+	struct modvm_device *uart, *exit_dev, *pci_bridge;
 	struct modvm_serial_pdata uart_pdata;
-	struct pc_irq_route *uart_route;
+	struct pio_bridge_pdata bridge_pdata;
+	struct pc_irq_route *route;
+	struct modvm_pci_bus *pci_root_bus = NULL;
 	uint64_t ram_size = ctx->config.ram_size;
 	uint64_t low_ram;
 	uint64_t high_ram = 0;
-	int ret;
+	char *drive_path = NULL;
+	int ret, i;
 
-	/* Handle memory splitting to preserve the architectural PCI hole */
 	if (ram_size >= PC_LOW_RAM_MAX) {
 		low_ram = PC_LOW_RAM_MAX;
 		high_ram = ram_size - PC_LOW_RAM_MAX;
@@ -80,31 +119,123 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	if (ret < 0)
 		return ret;
 
+	/* UART Device */
 	uart = modvm_device_alloc(ctx, "uart-16550a");
 	if (!uart)
 		return -ENOMEM;
 
-	uart_route = modvm_devm_zalloc(uart, sizeof(*uart_route));
-	if (!uart_route) {
-		ret = -ENOMEM;
-		goto err_uart;
+	route = modvm_devm_zalloc(uart, sizeof(*route));
+	if (!route) {
+		modvm_device_put(uart);
+		return -ENOMEM;
 	}
-
-	uart_route->accel = &ctx->accel;
-	uart_route->gsi = 4;
+	route->accel = &ctx->accel;
+	route->gsi = 4;
 
 	uart_pdata.base = 0x3f8;
 	uart_pdata.console = ctx->config.console;
-	uart_pdata.irq = modvm_devm_irq_alloc(uart, pc_irq_handler, uart_route);
+	uart_pdata.irq = modvm_devm_irq_alloc(uart, pc_irq_handler, route);
 	if (!uart_pdata.irq) {
-		ret = -ENOMEM;
-		goto err_uart;
+		modvm_device_put(uart);
+		return -ENOMEM;
 	}
 
 	ret = modvm_device_add(uart, &uart_pdata);
-	if (ret < 0)
-		goto err_uart;
+	if (ret < 0) {
+		modvm_device_put(uart);
+		return ret;
+	}
+	/* From here on, UART is managed by ctx->devices */
 
+	/* PCI Host Bridge Device */
+	pci_bridge = modvm_device_alloc(ctx, "pci-pio-bridge");
+	if (!pci_bridge)
+		return -ENOMEM;
+
+	bridge_pdata.config_addr_port = 0xCF8;
+	bridge_pdata.config_data_port = 0xCFC;
+	bridge_pdata.out_bus = &pci_root_bus;
+
+	for (i = 0; i < 4; i++) {
+		route = modvm_devm_zalloc(pci_bridge, sizeof(*route));
+		if (!route) {
+			modvm_device_put(pci_bridge);
+			return -ENOMEM;
+		}
+		route->accel = &ctx->accel;
+		route->gsi = 10 + i;
+		bridge_pdata.pirq[i] =
+			modvm_devm_irq_alloc(pci_bridge, pc_irq_handler, route);
+		if (!bridge_pdata.pirq[i]) {
+			modvm_device_put(pci_bridge);
+			return -ENOMEM;
+		}
+	}
+
+	ret = modvm_device_add(pci_bridge, &bridge_pdata);
+	if (ret < 0) {
+		modvm_device_put(pci_bridge);
+		return ret;
+	}
+	/* From here on, PCI Bridge is managed by ctx->devices */
+
+	/* Virtio Block Device (Optional) */
+	if (ctx->config.board_opts)
+		drive_path = board_extract_opt(ctx->config.board_opts, "drive");
+
+	if (drive_path) {
+		struct modvm_block *blk_backend;
+		struct virtio_device *vdev_blk;
+		struct modvm_device *vpci_dev;
+		struct virtio_pci_pdata vpci_pdata;
+
+		blk_backend = modvm_block_posix_create(drive_path, false);
+		if (!blk_backend) {
+			ret = -EIO;
+			free(drive_path);
+			return ret;
+		}
+
+		ret = modvm_ctxm_add_action(ctx, modvm_block_posix_destroy,
+					    blk_backend);
+		if (ret < 0) {
+			modvm_block_posix_destroy(blk_backend);
+			free(drive_path);
+			return ret;
+		}
+
+		vdev_blk = virtio_blk_create(ctx, blk_backend);
+		if (!vdev_blk) {
+			ret = -ENOMEM;
+			free(drive_path);
+			return ret;
+		}
+
+		vpci_dev = modvm_device_alloc(ctx, "virtio-pci");
+		if (!vpci_dev) {
+			ret = -ENOMEM;
+			free(drive_path);
+			return ret;
+		}
+
+		vpci_pdata.pci_bus = pci_root_bus;
+		vpci_pdata.vdev = vdev_blk;
+		vpci_pdata.devfn = 0x08;
+		vpci_pdata.interrupt_pin = 1;
+		vpci_pdata.interrupt_line = 10;
+		vpci_pdata.bar0_base = 0x0C000000;
+
+		ret = modvm_device_add(vpci_dev, &vpci_pdata);
+		if (ret < 0) {
+			modvm_device_put(vpci_dev);
+			free(drive_path);
+			return ret;
+		}
+
+		free(drive_path);
+	}
+
+	/* Debug Exit Device */
 	exit_dev = modvm_device_alloc(ctx, "debug-exit");
 	if (!exit_dev)
 		return -ENOMEM;
@@ -116,10 +247,6 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	}
 
 	return 0;
-
-err_uart:
-	modvm_device_put(uart);
-	return ret;
 }
 
 /**

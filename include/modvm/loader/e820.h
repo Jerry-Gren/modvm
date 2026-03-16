@@ -20,6 +20,6 @@ struct modvm_e820_entry {
 	uint64_t addr;
 	uint64_t size;
 	uint32_t type;
-} __attribute__((packed));
+} __packed;
 
 #endif /* MODVM_LOADER_E820_H */

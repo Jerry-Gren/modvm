@@ -30,6 +30,8 @@
 #define SETUP_MAGIC_OFFSET 0x0202
 #define SETUP_TYPE_OF_LOADER 0x0210
 #define SETUP_LOADFLAGS 0x0211
+#define SETUP_RAMDISK_IMAGE 0x0218
+#define SETUP_RAMDISK_SIZE 0x021C
 #define SETUP_HEAP_END_PTR 0x0224
 #define SETUP_CMDLINE_PTR 0x0228
 
@@ -152,19 +154,25 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 	struct linux_loader_ctx *lctx;
 	char *kernel_path;
 	char *cmdline;
+	char *initrd_path;
 	FILE *fp;
+	FILE *rd_fp;
 	uint8_t *hva_zero_page;
 	uint8_t *hva_kernel;
 	uint8_t *hva_cmdline;
+	uint8_t *hva_initrd;
 	uint8_t header_buf[1024];
 	uint32_t magic;
 	uint8_t setup_sects;
 	uint32_t setup_size;
 	long file_size;
+	long rd_size;
 	size_t payload_size;
+	uint64_t initrd_gpa;
 
 	kernel_path = extract_opt(opts, "kernel");
 	cmdline = extract_opt(opts, "append");
+	initrd_path = extract_opt(opts, "initrd");
 
 	if (WARN_ON(!kernel_path)) {
 		pr_err("linux protocol strictly requires 'kernel=<path>' option\n");
@@ -254,6 +262,62 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 		free(kernel_path);
 		free(cmdline);
 		return -EIO;
+	}
+
+	if (initrd_path) {
+		rd_fp = fopen(initrd_path, "rb");
+		if (!rd_fp) {
+			pr_err("failed to acquire initrd handle: %s (errno: %d)\n",
+			       initrd_path, errno);
+			fclose(fp);
+			free(kernel_path);
+			free(cmdline);
+			free(initrd_path);
+			return -ENOENT;
+		}
+
+		fseek(rd_fp, 0, SEEK_END);
+		rd_size = ftell(rd_fp);
+		rewind(rd_fp);
+
+		if (rd_size > 0) {
+			initrd_gpa = KERNEL_GPA + payload_size;
+			initrd_gpa = (initrd_gpa + 4095) & ~4095ULL;
+
+			hva_initrd = modvm_mem_gpa_to_hva(&ctx->accel.mem_space,
+							  initrd_gpa);
+			if (!hva_initrd) {
+				pr_err("failed to resolve guest memory for initrd\n");
+				fclose(rd_fp);
+				fclose(fp);
+				free(kernel_path);
+				free(cmdline);
+				free(initrd_path);
+				return -EFAULT;
+			}
+
+			if (fread(hva_initrd, 1, rd_size, rd_fp) !=
+			    (size_t)rd_size) {
+				pr_err("short read while streaming initrd payload\n");
+				fclose(rd_fp);
+				fclose(fp);
+				free(kernel_path);
+				free(cmdline);
+				free(initrd_path);
+				return -EIO;
+			}
+
+			*(uint32_t *)(hva_zero_page + SETUP_RAMDISK_IMAGE) =
+				(uint32_t)initrd_gpa;
+			*(uint32_t *)(hva_zero_page + SETUP_RAMDISK_SIZE) =
+				(uint32_t)rd_size;
+
+			pr_info("successfully streamed %ld bytes from '%s' to gpa 0x%08lx\n",
+				rd_size, initrd_path, initrd_gpa);
+		}
+
+		fclose(rd_fp);
+		free(initrd_path);
 	}
 
 	lctx = malloc(sizeof(*lctx));
