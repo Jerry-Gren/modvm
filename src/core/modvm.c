@@ -82,8 +82,8 @@ int modvm_init(struct modvm_ctx *ctx, const struct modvm_config *config)
 	 * We delegate physical memory mapping to the specific board class,
 	 * allowing it to handle architectural quirks like the x86 PCI hole.
 	 */
-	if (likely(ctx->config.board && ctx->config.board->ops &&
-		   ctx->config.board->ops->init)) {
+	if (ctx->config.board && ctx->config.board->ops &&
+	    ctx->config.board->ops->init) {
 		ret = ctx->config.board->ops->init(ctx);
 		if (ret < 0) {
 			pr_err("board physical topology wiring failed\n");
@@ -142,8 +142,8 @@ int modvm_run(struct modvm_ctx *ctx)
 	os_thread_system_init();
 	atomic_store(&ctx->accel.is_running, true);
 
-	if (likely(ctx->config.board && ctx->config.board->ops &&
-		   ctx->config.board->ops->reset)) {
+	if (ctx->config.board && ctx->config.board->ops &&
+	    ctx->config.board->ops->reset) {
 		int ret = ctx->config.board->ops->reset(ctx);
 		if (ret < 0) {
 			pr_err("board reset protocol and firmware injection failed\n");

@@ -6,15 +6,15 @@
 #include <modvm/utils/compiler.h>
 
 /**
- * typedef os_thread_func_t - signature for host OS thread entry points
+ * typedef os_thread_func_cb_t - signature for host OS thread entry points
  * @data: pointer to caller-defined execution closure
  */
-typedef void *(*os_thread_func_t)(void *data);
+typedef void *(*os_thread_func_cb_t)(void *data);
 
 struct os_thread;
 struct __ctx_lock_type(os_mutex) os_mutex;
 
-struct os_thread *os_thread_create(os_thread_func_t func, void *data);
+struct os_thread *os_thread_create(os_thread_func_cb_t func, void *data);
 void os_thread_system_init(void);
 int os_thread_join(struct os_thread *thread);
 void os_thread_send_wakeup(struct os_thread *thread);

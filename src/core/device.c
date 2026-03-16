@@ -61,13 +61,13 @@ struct modvm_device *modvm_device_alloc(struct modvm_ctx *ctx, const char *name)
 		}
 	}
 
-	if (unlikely(!cls)) {
+	if (!cls) {
 		pr_err("device class '%s' not found in registry\n", name);
 		return NULL;
 	}
 
 	dev = calloc(1, sizeof(*dev));
-	if (unlikely(!dev))
+	if (!dev)
 		return NULL;
 
 	dev->cls = cls;
@@ -97,9 +97,9 @@ int modvm_device_add(struct modvm_device *dev, void *pdata)
 	if (WARN_ON(!dev || !dev->cls || !dev->ctx))
 		return -EINVAL;
 
-	if (likely(dev->cls->instantiate)) {
+	if (dev->cls->instantiate) {
 		ret = dev->cls->instantiate(dev, pdata);
-		if (unlikely(ret < 0))
+		if (ret < 0)
 			return ret;
 	}
 

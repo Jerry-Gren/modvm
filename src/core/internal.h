@@ -12,12 +12,10 @@
  * Device models, board topologies, and loaders MUST NOT use them directly.
  */
 
-/* -- Memory Subsystem Internal -- */
 int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 			 size_t size, uint32_t flags);
 
-/* -- Resource Pool Subsystem Internal -- */
-void *modvm_res_alloc(modvm_res_release_t release, size_t size);
+void *modvm_res_alloc(modvm_res_release_cb_t release, size_t size);
 void modvm_res_add(struct modvm_res_pool *pool, void *res);
 void modvm_res_free(struct modvm_res_pool *pool, void *res);
 

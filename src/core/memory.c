@@ -69,14 +69,14 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	if (WARN_ON(!space || size == 0))
 		return -EINVAL;
 
-	if (unlikely(UINT64_MAX - gpa < size)) {
+	if (UINT64_MAX - gpa < size) {
 		pr_err("memory region 0x%lx + size 0x%zx wraps around address limit\n",
 		       gpa, size);
 		return -EOVERFLOW;
 	}
 
-	if (unlikely(gpa % space->host_page_size != 0 ||
-		     size % space->host_page_size != 0)) {
+	if (gpa % space->host_page_size != 0 ||
+	    size % space->host_page_size != 0) {
 		pr_err("region (gpa 0x%lx, size 0x%zx) strictly requires %zu bytes alignment\n",
 		       gpa, size, space->host_page_size);
 		return -EINVAL;
@@ -91,11 +91,11 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	}
 
 	reg = calloc(1, sizeof(*reg));
-	if (unlikely(!reg))
+	if (!reg)
 		return -ENOMEM;
 
 	reg->hva = os_page_alloc(size);
-	if (unlikely(IS_ERR(reg->hva))) {
+	if (IS_ERR(reg->hva)) {
 		ret = PTR_ERR(reg->hva);
 		pr_err("failed to allocate host backing memory for gpa 0x%lx\n",
 		       gpa);
@@ -114,9 +114,9 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	reg->size = size;
 	reg->flags = flags;
 
-	if (likely(space->map_cb)) {
+	if (space->map_cb) {
 		ret = space->map_cb(space, reg, space->map_data);
-		if (unlikely(ret != 0)) {
+		if (ret != 0) {
 			pr_err("hypervisor backend actively rejected mapping for gpa 0x%lx\n",
 			       gpa);
 			os_page_free(reg->hva, reg->size);
@@ -178,7 +178,7 @@ void modvm_mem_space_destroy(struct modvm_mem_space *space)
 		list_del(&pos->node);
 
 		/* Explicitly instruct the hardware to tear down EPT/NPT mappings */
-		if (likely(space->unmap_cb))
+		if (space->unmap_cb)
 			space->unmap_cb(space, pos, space->map_data);
 
 		os_page_free(pos->hva, pos->size);

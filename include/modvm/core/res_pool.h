@@ -6,11 +6,11 @@
 #include <modvm/utils/list.h>
 
 /**
- * typedef modvm_res_release_t - callback invoked when a tracked resource is freed
+ * typedef modvm_res_release_cb_t - callback invoked when a tracked resource is freed
  * @owner: opaque pointer to the entity owning the resource pool
  * @res: pointer to the resource data payload
  */
-typedef void (*modvm_res_release_t)(void *owner, void *res);
+typedef void (*modvm_res_release_cb_t)(void *owner, void *res);
 
 /**
  * struct modvm_res_pool - generic resource management container

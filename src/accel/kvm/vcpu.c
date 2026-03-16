@@ -119,7 +119,7 @@ static void handle_mmio_exit(struct modvm_vcpu *vcpu)
 	}
 }
 
-static int setup_kvm_sigmask(struct modvm_kvm_vcpu_state *state)
+static int kvm_vcpu_setup_sigmask(struct modvm_kvm_vcpu_state *state)
 {
 	struct kvm_signal_mask *kvm_mask;
 	const uint32_t KERNEL_SIGSET_SIZE = 8;
@@ -165,7 +165,7 @@ static int kvm_vcpu_run(struct modvm_vcpu *vcpu)
 
 	os_thread_block_wakeup();
 
-	ret = setup_kvm_sigmask(state);
+	ret = kvm_vcpu_setup_sigmask(state);
 	if (ret < 0)
 		return ret;
 

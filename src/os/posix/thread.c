@@ -57,7 +57,7 @@ void os_thread_system_init(void)
 		}
 	}
 
-	if (unlikely(wakeup_signum == -1)) {
+	if (wakeup_signum == -1) {
 		wakeup_signum = SIGUSR1;
 		sigaction(wakeup_signum, &sa, NULL);
 	}
@@ -70,7 +70,7 @@ void os_thread_system_init(void)
  *
  * Return: allocated thread handle, or ERR_PTR on failure.
  */
-struct os_thread *os_thread_create(os_thread_func_t func, void *data)
+struct os_thread *os_thread_create(os_thread_func_cb_t func, void *data)
 {
 	struct os_thread *thread;
 	int ret;
@@ -79,11 +79,11 @@ struct os_thread *os_thread_create(os_thread_func_t func, void *data)
 		return ERR_PTR(-EINVAL);
 
 	thread = calloc(1, sizeof(*thread));
-	if (unlikely(!thread))
+	if (!thread)
 		return ERR_PTR(-ENOMEM);
 
 	ret = pthread_create(&thread->handle, NULL, func, data);
-	if (unlikely(ret != 0)) {
+	if (ret != 0) {
 		free(thread);
 		return ERR_PTR(-EAGAIN);
 	}
@@ -102,7 +102,7 @@ int os_thread_join(struct os_thread *thread)
 	if (WARN_ON(!thread))
 		return -EINVAL;
 
-	if (unlikely(pthread_join(thread->handle, NULL) != 0))
+	if (pthread_join(thread->handle, NULL) != 0)
 		return -EINVAL;
 
 	return 0;
@@ -114,7 +114,7 @@ int os_thread_join(struct os_thread *thread)
  */
 void os_thread_send_wakeup(struct os_thread *thread)
 {
-	if (likely(thread && wakeup_signum != -1))
+	if (thread && wakeup_signum != -1)
 		pthread_kill(thread->handle, wakeup_signum);
 }
 
@@ -125,7 +125,7 @@ void os_thread_block_wakeup(void)
 {
 	sigset_t mask;
 
-	if (unlikely(wakeup_signum == -1))
+	if (wakeup_signum == -1)
 		return;
 
 	sigemptyset(&mask);
@@ -147,7 +147,7 @@ int os_thread_fill_wakeup_sigmask(void *buf, size_t size)
 	if (WARN_ON(!buf))
 		return -EINVAL;
 
-	if (unlikely(wakeup_signum == -1))
+	if (wakeup_signum == -1)
 		return -EINVAL;
 
 	pthread_sigmask(SIG_SETMASK, NULL, &unblocked);
@@ -171,10 +171,10 @@ struct os_mutex *os_mutex_create(void)
 	struct os_mutex *mutex;
 
 	mutex = calloc(1, sizeof(*mutex));
-	if (unlikely(!mutex))
+	if (!mutex)
 		return ERR_PTR(-ENOMEM);
 
-	if (unlikely(pthread_mutex_init(&mutex->handle, NULL) != 0)) {
+	if (pthread_mutex_init(&mutex->handle, NULL) != 0) {
 		free(mutex);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -196,7 +196,7 @@ void os_mutex_unlock(struct os_mutex *mutex)
 
 void os_mutex_destroy(struct os_mutex *mutex)
 {
-	if (likely(mutex)) {
+	if (mutex) {
 		pthread_mutex_destroy(&mutex->handle);
 		free(mutex);
 	}

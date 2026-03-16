@@ -6,12 +6,13 @@
 
 #include <modvm/core/bus.h>
 #include <modvm/core/devm.h>
-#include <modvm/hw/serial_reg.h>
 #include <modvm/hw/serial.h>
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/os/thread.h>
+
+#include "serial_reg.h"
 
 #undef pr_fmt
 #define pr_fmt(fmt) "uart_16550a: " fmt

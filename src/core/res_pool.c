@@ -9,7 +9,7 @@
 
 struct res_node {
 	struct list_head node;
-	modvm_res_release_t release;
+	modvm_res_release_cb_t release;
 	size_t size;
 	unsigned long long __padding;
 	uint8_t data[];
@@ -44,7 +44,7 @@ void modvm_res_pool_init(struct modvm_res_pool *pool, void *owner)
  *
  * Return: pointer to the resource payload, or NULL on failure.
  */
-void *modvm_res_alloc(modvm_res_release_t release, size_t size)
+void *modvm_res_alloc(modvm_res_release_cb_t release, size_t size)
 {
 	struct res_node *node;
 
