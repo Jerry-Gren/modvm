@@ -6,6 +6,9 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/compiler.h>
 
+#undef pr_fmt
+#define pr_fmt(fmt) "pci: " fmt
+
 /**
  * modvm_pci_bus_init - initialize a virtual PCI bus topology
  * @bus: the PCI bus instance to initialize

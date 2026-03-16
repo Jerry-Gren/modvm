@@ -11,6 +11,9 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 
+#undef pr_fmt
+#define pr_fmt(fmt) "virtio_mmio: " fmt
+
 #define VIRTIO_STATUS_ACKNOWLEDGE 1
 #define VIRTIO_STATUS_DRIVER 2
 #define VIRTIO_STATUS_FEATURES_OK 8

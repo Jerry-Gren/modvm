@@ -12,6 +12,9 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/compiler.h>
 
+#undef pr_fmt
+#define pr_fmt(fmt) "pio_bridge: " fmt
+
 /**
  * struct pio_bridge_ctx - state container for the x86 PIO PCI Host Bridge
  * @config_addr: latched address for the subsequent data port access
@@ -140,7 +143,7 @@ static int pio_bridge_instantiate(struct modvm_device *dev, void *pdata)
 	if (plat->out_bus)
 		*plat->out_bus = &ctx->bus;
 
-	pr_info("PIO PCI Host Bridge online at ports 0x%x/0x%x\n",
+	pr_info("pio pci host bridge online at ports 0x%x/0x%x\n",
 		plat->config_addr_port, plat->config_data_port);
 	return 0;
 }

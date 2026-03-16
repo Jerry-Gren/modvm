@@ -11,6 +11,9 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
 
+#undef pr_fmt
+#define pr_fmt(fmt) "virtio_blk: " fmt
+
 #define VIRTIO_ID_BLOCK 2
 #define VIRTIO_BLK_QUEUE_SIZE 128
 #define SECTOR_SIZE 512

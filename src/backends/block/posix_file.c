@@ -12,6 +12,9 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
 
+#undef pr_fmt
+#define pr_fmt(fmt) "posix_file: " fmt
+
 struct block_posix_ctx {
 	int fd;
 	uint64_t capacity;
