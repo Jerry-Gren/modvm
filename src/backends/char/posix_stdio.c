@@ -8,6 +8,7 @@
 #include <termios.h>
 
 #include <modvm/core/chardev.h>
+#include <modvm/core/modvm.h>
 #include <modvm/os/event_loop.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
@@ -17,12 +18,16 @@
 #define pr_fmt(fmt) "posix_stdio: " fmt
 
 #define STDIO_TX_BUF_SIZE 256
+#define ESCAPE_CHAR 0x01 /* Ctrl+a */
 
 struct stdio_ctx {
 	struct termios orig_termios;
 	bool is_saved;
 	uint8_t tx_buf[STDIO_TX_BUF_SIZE];
 	size_t tx_len;
+
+	bool escape_pending;
+	struct modvm_ctx *ctx;
 };
 
 static int stdio_write(struct modvm_chardev *dev, const uint8_t *buf,
@@ -61,20 +66,54 @@ static int stdio_write(struct modvm_chardev *dev, const uint8_t *buf,
 static void stdio_rx_cb(int fd, uint32_t events, void *data)
 {
 	struct modvm_chardev *dev = data;
+	struct stdio_ctx *ctx = dev->priv;
 	uint8_t rx_buf[64];
+	uint8_t filtered_buf[64];
+	size_t filtered_len = 0;
 	ssize_t ret;
+	ssize_t i;
 
 	if (unlikely(!(events & MODVM_EVENT_READ)))
 		return;
 
 	ret = read(fd, rx_buf, sizeof(rx_buf));
-	if (likely(ret > 0 && dev->rx_cb))
-		dev->rx_cb(dev->rx_data, rx_buf, ret);
+	if (unlikely(ret <= 0))
+		return;
+
+	for (i = 0; i < ret; i++) {
+		if (unlikely(ctx->escape_pending)) {
+			ctx->escape_pending = false;
+
+			if (rx_buf[i] == 'x' || rx_buf[i] == 'X') {
+				pr_info("caught Ctrl+a x, requesting shutdown...\n");
+				modvm_request_shutdown(ctx->ctx);
+				return;
+			} else if (rx_buf[i] == ESCAPE_CHAR) {
+				/* Double escape sends a literal Ctrl+a to the guest */
+				filtered_buf[filtered_len++] = ESCAPE_CHAR;
+			} else {
+				pr_info("Ctrl+a %c is not supported (only 'x' to exit)\n",
+					(rx_buf[i] >= 32 && rx_buf[i] <= 126) ?
+						rx_buf[i] :
+						'?');
+			}
+		} else if (unlikely(rx_buf[i] == ESCAPE_CHAR)) {
+			ctx->escape_pending = true;
+		} else {
+			filtered_buf[filtered_len++] = rx_buf[i];
+		}
+	}
+
+	if (likely(filtered_len > 0 && dev->rx_cb))
+		dev->rx_cb(dev->rx_data, filtered_buf, filtered_len);
 }
 
 static void stdio_set_rx_cb(struct modvm_chardev *dev, struct modvm_ctx *ctx,
 			    modvm_chardev_rx_cb_t cb, void *data)
 {
+	struct stdio_ctx *sctx = dev->priv;
+	sctx->ctx = ctx;
+
 	(void)data;
 
 	if (cb) {
