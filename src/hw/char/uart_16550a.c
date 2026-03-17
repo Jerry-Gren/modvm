@@ -18,6 +18,9 @@
 #define pr_fmt(fmt) "uart_16550a: " fmt
 
 #define UART_FIFO_SIZE 16
+#define UART_BACKLOG_SIZE 256
+#define UART_BACKLOG_HIGH_WATERMARK 192
+#define UART_BACKLOG_LOW_WATERMARK 64
 
 /**
  * struct uart_16550a_ctx - internal state machine for the 16550a uart
@@ -67,6 +70,13 @@ struct uart_16550a_ctx {
 	uint8_t rx_head __guarded_by(lock);
 	uint8_t rx_tail __guarded_by(lock);
 	uint8_t rx_cnt __guarded_by(lock);
+
+	/* Software backlog buffer for flow control */
+	uint8_t backlog_fifo[UART_BACKLOG_SIZE] __guarded_by(lock);
+	uint16_t backlog_head __guarded_by(lock);
+	uint16_t backlog_tail __guarded_by(lock);
+	uint16_t backlog_cnt __guarded_by(lock);
+	bool rx_paused __guarded_by(lock);
 
 	uint8_t tx_fifo[UART_FIFO_SIZE] __guarded_by(lock);
 	uint8_t tx_head __guarded_by(lock);
@@ -161,6 +171,40 @@ static inline void uart_fifo_rx_push(struct uart_16550a_ctx *ctx, uint8_t c)
 	ctx->rx_head = (ctx->rx_head + 1) % UART_FIFO_SIZE;
 	ctx->rx_cnt++;
 	ctx->lsr |= UART_LSR_DR;
+}
+
+/**
+ * uart_refill_hardware_fifo - transfer bytes from backlog to hardware FIFO
+ * @ctx: the uart state machine context
+ *
+ * Triggers backpressure release (resume_rx) if the backlog falls below
+ * the low watermark.
+ */
+static inline void uart_refill_hardware_fifo(struct uart_16550a_ctx *ctx)
+	__must_hold(ctx->lock)
+{
+	bool pushed = false;
+
+	while (ctx->backlog_cnt > 0 && ctx->rx_cnt < UART_FIFO_SIZE) {
+		uart_fifo_rx_push(ctx, ctx->backlog_fifo[ctx->backlog_tail]);
+		ctx->backlog_tail = (ctx->backlog_tail + 1) % UART_BACKLOG_SIZE;
+		ctx->backlog_cnt--;
+		pushed = true;
+	}
+
+	if (unlikely(ctx->rx_paused &&
+		     ctx->backlog_cnt < UART_BACKLOG_LOW_WATERMARK)) {
+		modvm_chardev_resume_rx(ctx->console);
+		ctx->rx_paused = false;
+	}
+
+	if (pushed) {
+		if ((ctx->fcr & UART_FCR_ENABLE_FIFO) && ctx->rx_cnt > 0 &&
+		    ctx->rx_cnt < ctx->rx_trigger_level)
+			ctx->rx_timeout = true;
+		else
+			ctx->rx_timeout = false;
+	}
 }
 
 /**
@@ -370,8 +414,7 @@ static uint8_t uart_read_reg(struct uart_16550a_ctx *ctx, uint16_t offset)
 	case UART_LSR:
 		val = ctx->lsr;
 		/*
-		 * 架构折中说明 (Architecture Trade-off):
-		 * TI Manual 8.6.3: In the FIFO mode LSR7 is set when there is at least 
+		 * Datasheet 8.6.3: In the FIFO mode LSR7 is set when there is at least 
 		 * one parity error, framing error or break indication in the FIFO.
 		 */
 		val &= ~0x80;
@@ -553,13 +596,18 @@ static uint64_t uart_bus_read(struct modvm_device *dev, uint64_t addr,
 
 	os_mutex_lock(ctx->lock);
 
+	if (addr == UART_RX)
+		modvm_irq_set_level(ctx->irq, 0);
+
 	for (i = 0; i < size; i++) {
 		uint8_t reg_val = uart_read_reg(ctx, addr + i);
 		ret |= ((uint64_t)reg_val << (i * 8));
 	}
 
-	/* reading registers may clear pending interrupts */
 	uart_update_irq(ctx);
+	uart_refill_hardware_fifo(ctx);
+	uart_update_irq(ctx);
+
 	os_mutex_unlock(ctx->lock);
 
 	return ret;
@@ -593,21 +641,23 @@ static void uart_rx_cb(void *data, const uint8_t *buf, size_t len)
 
 	os_mutex_lock(ctx->lock);
 
-	for (i = 0; i < len; i++)
-		uart_fifo_rx_push(ctx, buf[i]);
-
-	/*
-	 * Datasheet 8.4.1: Character Timeout Interrupt.
-	 * Triggers when the FIFO is not empty, but no characters have been
-	 * added or removed for 4 character times.
-	 */
-	if ((ctx->fcr & UART_FCR_ENABLE_FIFO) && ctx->rx_cnt > 0 &&
-	    ctx->rx_cnt < ctx->rx_trigger_level) {
-		ctx->rx_timeout = true;
-	} else {
-		ctx->rx_timeout = false;
+	for (i = 0; i < len; i++) {
+		if (unlikely(ctx->backlog_cnt >= UART_BACKLOG_SIZE)) {
+			ctx->lsr |= UART_LSR_OE;
+			break;
+		}
+		ctx->backlog_fifo[ctx->backlog_head] = buf[i];
+		ctx->backlog_head = (ctx->backlog_head + 1) % UART_BACKLOG_SIZE;
+		ctx->backlog_cnt++;
 	}
 
+	if (!ctx->rx_paused &&
+	    ctx->backlog_cnt >= UART_BACKLOG_HIGH_WATERMARK) {
+		modvm_chardev_pause_rx(ctx->console);
+		ctx->rx_paused = true;
+	}
+
+	uart_refill_hardware_fifo(ctx);
 	/* evaluate the interrupt lines after state mutation */
 	uart_update_irq(ctx);
 	os_mutex_unlock(ctx->lock);

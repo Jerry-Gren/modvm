@@ -135,9 +135,28 @@ static void stdio_set_rx_cb(struct modvm_chardev *dev, struct modvm_ctx *ctx,
 	}
 }
 
+static void stdio_pause_rx(struct modvm_chardev *dev)
+{
+	struct stdio_ctx *ctx = dev->priv;
+
+	if (likely(ctx->ctx))
+		modvm_event_loop_rm_fd(ctx->ctx, STDIN_FILENO);
+}
+
+static void stdio_resume_rx(struct modvm_chardev *dev)
+{
+	struct stdio_ctx *ctx = dev->priv;
+
+	if (likely(ctx->ctx && dev->rx_cb))
+		modvm_event_loop_add_fd(ctx->ctx, STDIN_FILENO,
+					MODVM_EVENT_READ, stdio_rx_cb, dev);
+}
+
 static const struct modvm_chardev_ops stdio_ops = {
 	.write = stdio_write,
 	.set_rx_cb = stdio_set_rx_cb,
+	.pause_rx = stdio_pause_rx,
+	.resume_rx = stdio_resume_rx,
 };
 
 /**

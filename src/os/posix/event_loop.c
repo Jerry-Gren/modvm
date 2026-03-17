@@ -10,7 +10,9 @@
 #include <modvm/core/ctxm.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/err.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/os/thread.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "posix_event_loop: " fmt
@@ -24,6 +26,7 @@ struct event_record {
 };
 
 struct posix_event_loop {
+	struct os_mutex *lock;
 	struct pollfd poll_fds[MAX_POLL_EVENTS];
 	struct event_record events[MAX_POLL_EVENTS];
 	int nr_events;
@@ -50,6 +53,21 @@ static void posix_event_loop_close(struct posix_event_loop *loop)
 		close(loop->wakeup_pipe[0]);
 	if (loop->wakeup_pipe[1] != -1)
 		close(loop->wakeup_pipe[1]);
+	if (loop->lock)
+		os_mutex_destroy(loop->lock);
+}
+
+/**
+ * event_loop_kick - interrupt the blocking poll() system call
+ * @loop: the event loop structure
+ */
+static void event_loop_kick(struct posix_event_loop *loop)
+{
+	if (likely(loop->wakeup_pipe[1] != -1)) {
+		if (write(loop->wakeup_pipe[1], "k", 1) < 0) {
+			/* EAGAIN is safely ignored if the pipe is saturated */
+		}
+	}
 }
 
 /**
@@ -103,6 +121,13 @@ int modvm_event_loop_init(struct modvm_ctx *ctx)
 	loop->wakeup_pipe[0] = -1;
 	loop->wakeup_pipe[1] = -1;
 
+	loop->lock = os_mutex_create();
+	if (IS_ERR(loop->lock)) {
+		int ret = PTR_ERR(loop->lock);
+		loop->lock = NULL;
+		return ret;
+	}
+
 	if (pipe(loop->wakeup_pipe) < 0) {
 		pr_err("failed to instantiate synthetic wakeup pipe: %d\n",
 		       errno);
@@ -152,6 +177,8 @@ int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
 	if (events_mask & MODVM_EVENT_WRITE)
 		poll_ev |= POLLOUT;
 
+	os_mutex_lock(loop->lock);
+
 	/* Scan for a tombstone (soft-deleted) slot to reuse */
 	for (i = 0; i < loop->nr_events; i++) {
 		if (loop->poll_fds[i].fd == -1) {
@@ -162,8 +189,10 @@ int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
 
 	/* Append to the end if no free slots exist */
 	if (slot == -1) {
-		if (WARN_ON(loop->nr_events >= MAX_POLL_EVENTS))
+		if (WARN_ON(loop->nr_events >= MAX_POLL_EVENTS)) {
+			os_mutex_unlock(loop->lock);
 			return -ENOSPC;
+		}
 		slot = loop->nr_events++;
 	}
 
@@ -174,6 +203,10 @@ int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
 	loop->events[slot].fd = fd;
 	loop->events[slot].cb = cb;
 	loop->events[slot].data = data;
+
+	os_mutex_unlock(loop->lock);
+
+	event_loop_kick(loop);
 
 	pr_debug("monitoring descriptor %d at slot %d\n", fd, slot);
 
@@ -199,6 +232,7 @@ void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
 
 	loop = ctx->event_loop.priv;
 
+	os_mutex_lock(loop->lock);
 	for (i = 0; i < loop->nr_events; i++) {
 		if (loop->poll_fds[i].fd == fd) {
 			/*
@@ -213,11 +247,16 @@ void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
 			loop->events[i].cb = NULL;
 			loop->events[i].data = NULL;
 
+			os_mutex_unlock(loop->lock);
+
+			event_loop_kick(loop);
+
 			pr_debug("relinquished monitoring of descriptor %d\n",
 				 fd);
 			return;
 		}
 	}
+	os_mutex_unlock(loop->lock);
 }
 
 /**
@@ -229,7 +268,8 @@ void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
 int modvm_event_loop_run(struct modvm_ctx *ctx)
 {
 	struct posix_event_loop *loop;
-	uint32_t revents;
+	struct pollfd local_poll_fds[MAX_POLL_EVENTS];
+	int local_nr_events;
 	int ret;
 	int i;
 
@@ -240,8 +280,14 @@ int modvm_event_loop_run(struct modvm_ctx *ctx)
 	loop->is_running = true;
 
 	while (loop->is_running) {
+		os_mutex_lock(loop->lock);
 		/* Compress the array outside the dispatching phase */
 		event_loop_compact(loop);
+
+		local_nr_events = loop->nr_events;
+		for (i = 0; i < local_nr_events; i++)
+			local_poll_fds[i] = loop->poll_fds[i];
+		os_mutex_unlock(loop->lock);
 
 		ret = poll(loop->poll_fds, loop->nr_events, -1);
 		if (unlikely(ret < 0)) {
@@ -251,31 +297,35 @@ int modvm_event_loop_run(struct modvm_ctx *ctx)
 			return -errno;
 		}
 
-		for (i = 0; i < loop->nr_events; i++) {
-			/*
-			 * Skip if a previous callback in this loop iteration 
-			 * removed this descriptor (soft-delete).
-			 */
-			if (unlikely(loop->poll_fds[i].fd == -1))
+		for (i = 0; i < local_nr_events; i++) {
+			uint32_t revents = 0;
+			modvm_event_cb_t cb;
+			void *data;
+			int fd;
+
+			if (!local_poll_fds[i].revents)
 				continue;
 
-			if (!loop->poll_fds[i].revents)
+			os_mutex_lock(loop->lock);
+			if (loop->poll_fds[i].fd != local_poll_fds[i].fd) {
+				os_mutex_unlock(loop->lock);
 				continue;
+			}
 
-			revents = 0;
-			if (loop->poll_fds[i].revents & (POLLIN | POLLHUP))
+			fd = loop->poll_fds[i].fd;
+			cb = loop->events[i].cb;
+			data = loop->events[i].data;
+			os_mutex_unlock(loop->lock);
+
+			if (local_poll_fds[i].revents & (POLLIN | POLLHUP))
 				revents |= MODVM_EVENT_READ;
-			if (loop->poll_fds[i].revents & POLLOUT)
+			if (local_poll_fds[i].revents & POLLOUT)
 				revents |= MODVM_EVENT_WRITE;
-			if (loop->poll_fds[i].revents & POLLERR)
+			if (local_poll_fds[i].revents & POLLERR)
 				revents |= MODVM_EVENT_ERROR;
 
-			if (likely(loop->events[i].cb))
-				loop->events[i].cb(loop->poll_fds[i].fd,
-						   revents,
-						   loop->events[i].data);
-
-			loop->poll_fds[i].revents = 0;
+			if (likely(cb))
+				cb(fd, revents, data);
 		}
 	}
 
@@ -296,9 +346,5 @@ void modvm_event_loop_stop(struct modvm_ctx *ctx)
 	loop = ctx->event_loop.priv;
 	loop->is_running = false;
 
-	if (likely(loop->wakeup_pipe[1] != -1)) {
-		if (write(loop->wakeup_pipe[1], "x", 1) < 0) {
-			/* EAGAIN is safely ignored if the pipe is saturated */
-		}
-	}
+	event_loop_kick(loop);
 }

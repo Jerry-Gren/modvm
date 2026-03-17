@@ -26,6 +26,8 @@ struct modvm_chardev_ops {
 	int (*write)(struct modvm_chardev *dev, const uint8_t *buf, size_t len);
 	void (*set_rx_cb)(struct modvm_chardev *dev, struct modvm_ctx *ctx,
 			  modvm_chardev_rx_cb_t cb, void *data);
+	void (*pause_rx)(struct modvm_chardev *dev);
+	void (*resume_rx)(struct modvm_chardev *dev);
 };
 
 /**
@@ -55,6 +57,18 @@ static inline void modvm_chardev_set_rx_cb(struct modvm_chardev *dev,
 		if (dev->ops && dev->ops->set_rx_cb)
 			dev->ops->set_rx_cb(dev, ctx, cb, data);
 	}
+}
+
+static inline void modvm_chardev_pause_rx(struct modvm_chardev *dev)
+{
+	if (dev && dev->ops && dev->ops->pause_rx)
+		dev->ops->pause_rx(dev);
+}
+
+static inline void modvm_chardev_resume_rx(struct modvm_chardev *dev)
+{
+	if (dev && dev->ops && dev->ops->resume_rx)
+		dev->ops->resume_rx(dev);
 }
 
 #endif /* MODVM_CORE_CHARDEV_H */
