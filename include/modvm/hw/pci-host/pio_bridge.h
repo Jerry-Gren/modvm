@@ -11,7 +11,7 @@ struct modvm_pci_bus;
  * struct pio_bridge_pdata - platform routing data for the PIO Bridge
  * @config_addr_port: PIO port for CONFIG_ADDRESS
  * @config_data_port: PIO port for CONFIG_DATA
- * @mmio_base: ?
+ * @mmio_base: starting physical address for PCI MMIO allocations
  * @pirq: array mapping the 4 standard PCI routing lines (PIRQA-PIRQD) to system GSIs
  * @out_bus: OUT parameter; bridge will populate this with its logical bus pointer
  */

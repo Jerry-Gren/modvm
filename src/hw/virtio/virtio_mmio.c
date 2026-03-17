@@ -242,6 +242,7 @@ static int virtio_mmio_instantiate(struct modvm_device *dev, void *pdata)
 
 	vdev = plat->vdev;
 	vdev->parent_dev = dev;
+	vdev->set_irq = virtio_mmio_set_irq;
 	ctx->vdev = vdev;
 	ctx->irq = plat->irq;
 

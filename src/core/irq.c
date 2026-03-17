@@ -32,7 +32,7 @@ struct modvm_irq *modvm_devm_irq_alloc(struct modvm_device *dev,
 		return NULL;
 
 	irq = modvm_devm_zalloc(dev, sizeof(*irq));
-	if (unlikely(!irq))
+	if (!irq)
 		return NULL;
 
 	irq->cb = cb;

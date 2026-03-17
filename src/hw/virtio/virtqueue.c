@@ -79,6 +79,20 @@ struct virtqueue *virtqueue_create(struct modvm_mem_space *mem,
 }
 
 /**
+ * virtqueue_get_size - retrieve the configured maximum depth of the queue
+ * @vq: the virtqueue instance
+ *
+ * Return: number of descriptors the queue can hold, or 0 if invalid.
+ */
+uint16_t virtqueue_get_size(struct virtqueue *vq)
+{
+	if (WARN_ON(!vq))
+		return 0;
+
+	return vq->queue_size;
+}
+
+/**
  * virtqueue_set_addrs - bind guest physical rings to the host structures
  * @vq: the virtqueue instance
  * @desc_gpa: guest physical address of the descriptor table

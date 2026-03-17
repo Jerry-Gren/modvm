@@ -69,19 +69,21 @@ struct modvm_pci_device {
  * struct modvm_pci_bus - abstract representation of a PCI bus segment
  * @devices: list of PCI endpoint devices attached to this bus
  * @set_irq_cb: host bridge hook for intercepting and swizzling interrupts
- * @set_irq_data: host bridge closure data
+ * @sys_data: host bridge closure data shared across callbacks
+ * @next_devfn: cursor for automatic devfn allocation
+ * @mmio_alloc_cursor: cursor for automatic MMIO window allocation
  */
 struct modvm_pci_bus {
 	struct list_head devices;
 	modvm_pci_set_irq_cb_t set_irq_cb;
-	void *set_irq_data;
+	void *sys_data;
 
 	uint8_t next_devfn;
 	uint64_t mmio_alloc_cursor;
 };
 
 void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
-			modvm_pci_set_irq_cb_t set_irq_cb, void *set_irq_data);
+			modvm_pci_set_irq_cb_t set_irq_cb, void *sys_data);
 uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size);
 int modvm_pci_device_register(struct modvm_pci_bus *bus,
 			      struct modvm_pci_device *pci_dev);

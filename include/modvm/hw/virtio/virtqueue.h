@@ -41,6 +41,8 @@ struct virtqueue *virtqueue_create(struct modvm_mem_space *mem,
 				   uint16_t queue_size);
 void virtqueue_destroy(struct virtqueue *vq);
 
+uint16_t virtqueue_get_size(struct virtqueue *vq);
+
 int virtqueue_set_addrs(struct virtqueue *vq, uint64_t desc_gpa,
 			uint64_t avail_gpa, uint64_t used_gpa);
 int virtqueue_pop(struct virtqueue *vq, uint16_t *out_desc_idx,

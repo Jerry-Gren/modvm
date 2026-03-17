@@ -46,6 +46,34 @@ static void pc_irq_handler(void *data, int level)
 	modvm_accel_set_irq(route->accel, route->gsi, level);
 }
 
+static void pc_board_route_pci_irqs(struct modvm_pci_bus *bus)
+{
+	struct modvm_pci_device *pos;
+
+	list_for_each_entry(pos, &bus->devices, node)
+	{
+		uint8_t pin;
+		uint8_t slot;
+		uint8_t irq_line;
+
+		pin = modvm_pci_bus_read_config(bus, pos->devfn,
+						PCI_INTERRUPT_PIN, 1);
+
+		if (pin > 0 && pin <= 4) {
+			slot = pos->devfn >> 3;
+			/* Map Slot/Pin to PIRQA-D, which map to GSIs 10-13 */
+			irq_line = 10 + ((slot + pin - 1) % 4);
+
+			modvm_pci_bus_write_config(bus, pos->devfn,
+						   PCI_INTERRUPT_LINE, irq_line,
+						   1);
+
+			pr_info("firmware routed devfn %u pin %u -> GSI %u\n",
+				pos->devfn, pin, irq_line);
+		}
+	}
+}
+
 static int pc_board_add_virtio_blk(struct modvm_ctx *ctx,
 				   struct modvm_pci_bus *pci_bus)
 {
@@ -89,7 +117,6 @@ static int pc_board_add_virtio_blk(struct modvm_ctx *ctx,
 	vpci_pdata.devfn = PCI_AUTO_DEVFN;
 	vpci_pdata.bar0_base = PCI_AUTO_MMIO;
 	vpci_pdata.interrupt_pin = 1;
-	vpci_pdata.interrupt_line = 10;
 
 	ret = modvm_device_add(vpci_dev, &vpci_pdata);
 	if (ret < 0) {
@@ -179,7 +206,7 @@ static int pc_board_init(struct modvm_ctx *ctx)
 
 	bridge_pdata.config_addr_port = 0xCF8;
 	bridge_pdata.config_data_port = 0xCFC;
-	bridge_pdata.mmio_base = 0x0C000000;
+	bridge_pdata.mmio_base = PC_LOW_RAM_MAX;
 	bridge_pdata.out_bus = &pci_root_bus;
 
 	for (i = 0; i < 4; i++) {
@@ -209,6 +236,10 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	ret = pc_board_add_virtio_blk(ctx, pci_root_bus);
 	if (ret < 0)
 		return ret;
+
+	/* Execute firmware PCI enumeration and IRQ routing */
+	if (pci_root_bus)
+		pc_board_route_pci_irqs(pci_root_bus);
 
 	/* Debug Exit Device */
 	exit_dev = modvm_device_alloc(ctx, "debug-exit");

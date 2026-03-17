@@ -77,8 +77,12 @@ static void stdio_rx_cb(int fd, uint32_t events, void *data)
 		return;
 
 	ret = read(fd, rx_buf, sizeof(rx_buf));
-	if (unlikely(ret <= 0))
+	if (unlikely(ret <= 0)) {
+		/* catch eof */
+		if (ret == 0)
+			modvm_event_loop_rm_fd(ctx->ctx, fd);
 		return;
+	}
 
 	for (i = 0; i < ret; i++) {
 		if (unlikely(ctx->escape_pending)) {

@@ -32,7 +32,7 @@ struct virtio_device_ops {
 	void (*reset)(struct virtio_device *vdev);
 	uint64_t (*get_features)(struct virtio_device *vdev);
 	void (*set_features)(struct virtio_device *vdev, uint64_t features);
-	uint32_t (*read_config)(struct virtio_device *vdev, uint64_t offset,
+	uint64_t (*read_config)(struct virtio_device *vdev, uint64_t offset,
 				uint8_t size);
 	void (*write_config)(struct virtio_device *vdev, uint64_t offset,
 			     uint32_t val, uint8_t size);
@@ -47,6 +47,7 @@ struct virtio_device_ops {
  * @device_id: standard Virtio subsystem identifier (e.g., 2 for Block)
  * @vqs: array of managed virtqueues
  * @nr_vqs: number of active virtqueues
+ * @set_irq: ?
  */
 struct virtio_device {
 	struct modvm_device *parent_dev;
@@ -56,6 +57,8 @@ struct virtio_device {
 
 	struct virtqueue *vqs[VIRTIO_MAX_VQS];
 	uint16_t nr_vqs;
+
+	void (*set_irq)(struct virtio_device *vdev);
 };
 
 /**

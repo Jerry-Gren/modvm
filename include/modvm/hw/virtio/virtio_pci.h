@@ -131,7 +131,6 @@ struct virtio_pci_common_cfg {
  * @vdev: the specific virtio backend payload to wrap
  * @devfn: requested PCI Device and Function number (e.g., Slot << 3)
  * @interrupt_pin: PCI interrupt pin (1=INTA, 2=INTB, 3=INTC, 4=INTD)
- * @interrupt_line: system IRQ line mapped to this pin
  * @bar0_base: MMIO base address allocated by the motherboard for BAR0
  */
 struct virtio_pci_pdata {
@@ -139,7 +138,6 @@ struct virtio_pci_pdata {
 	struct virtio_device *vdev;
 	uint8_t devfn;
 	uint8_t interrupt_pin;
-	uint8_t interrupt_line;
 	uint64_t bar0_base;
 };
 

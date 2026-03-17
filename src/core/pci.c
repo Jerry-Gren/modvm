@@ -12,24 +12,31 @@
 /**
  * modvm_pci_bus_init - initialize a virtual PCI bus topology
  * @bus: the PCI bus instance to initialize
- * @mmio_base: ?
+ * @mmio_base: starting physical address for dynamic MMIO window allocations
  * @set_irq_cb: host bridge hook for interrupt routing
- * @set_irq_data: host bridge closure data
+ * @sys_data: host bridge closure data
  */
 void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
-			modvm_pci_set_irq_cb_t set_irq_cb, void *set_irq_data)
+			modvm_pci_set_irq_cb_t set_irq_cb, void *sys_data)
 {
 	if (WARN_ON(!bus))
 		return;
 
 	INIT_LIST_HEAD(&bus->devices);
 	bus->set_irq_cb = set_irq_cb;
-	bus->set_irq_data = set_irq_data;
+	bus->sys_data = sys_data;
 
 	bus->next_devfn = 8;
 	bus->mmio_alloc_cursor = mmio_base;
 }
 
+/**
+ * modvm_pci_bus_alloc_mmio - allocate a contiguous block of PCI MMIO space
+ * @bus: the PCI bus managing the memory window
+ * @size: requested size in bytes (must be a power of 2)
+ *
+ * Return: absolute physical base address, or 0 on failure.
+ */
 uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size)
 {
 	uint64_t base;
@@ -48,7 +55,8 @@ uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size)
  * @bus: the target PCI bus
  * @pci_dev: the endpoint device to attach
  *
- * Populates immutable configuration space fields and mounts the device.
+ * Populates immutable configuration space fields and handles dynamic devfn
+ * allocation if requested. System IRQ routing is deferred to the firmware.
  *
  * Return: 0 on success, or a negative error code.
  */
@@ -80,14 +88,12 @@ int modvm_pci_device_register(struct modvm_pci_bus *bus,
 
 	pci_dev->bus = bus;
 
-	/* Architecturally expose the hardware routing to the guest OS */
 	pci_dev->config_space[PCI_INTERRUPT_PIN] = pci_dev->interrupt_pin;
-	pci_dev->config_space[PCI_INTERRUPT_LINE] = pci_dev->interrupt_line;
+	pci_dev->config_space[PCI_INTERRUPT_LINE] = 0;
 
 	list_add_tail(&pci_dev->node, &bus->devices);
-	pr_info("registered PCI device at devfn %u (pin %u, irq %u)\n",
-		pci_dev->devfn, pci_dev->interrupt_pin,
-		pci_dev->interrupt_line);
+	pr_info("registered PCI device at devfn %u (pin %u)\n", pci_dev->devfn,
+		pci_dev->interrupt_pin);
 
 	return 0;
 }
@@ -174,5 +180,5 @@ void modvm_pci_device_set_irq(struct modvm_pci_device *pci_dev, int level)
 	bus = pci_dev->bus;
 
 	if (likely(bus->set_irq_cb))
-		bus->set_irq_cb(bus->set_irq_data, pci_dev, level);
+		bus->set_irq_cb(bus->sys_data, pci_dev, level);
 }

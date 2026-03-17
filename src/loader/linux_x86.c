@@ -210,6 +210,13 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 
 	fseek(fp, setup_size, SEEK_SET);
 	payload_size = file_size - setup_size;
+
+	if (KERNEL_GPA + payload_size > PC_LOW_RAM_MAX) {
+		pr_err("kernel payload exceeds low ram contiguous boundary\n");
+		ret = -ENOSPC;
+		goto err_close_kernel;
+	}
+
 	if (fread(hva_kernel, 1, payload_size, fp) != payload_size) {
 		pr_err("short read while streaming kernel payload\n");
 		ret = -EIO;
@@ -232,6 +239,12 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 		if (rd_size > 0) {
 			initrd_gpa = KERNEL_GPA + payload_size;
 			initrd_gpa = (initrd_gpa + 4095) & ~4095ULL;
+
+			if (initrd_gpa + rd_size > PC_LOW_RAM_MAX) {
+				pr_err("initrd payload exceeds low ram contiguous boundary\n");
+				ret = -ENOSPC;
+				goto err_close_initrd;
+			}
 
 			hva_initrd = modvm_mem_gpa_to_hva(&ctx->accel.mem_space,
 							  initrd_gpa);

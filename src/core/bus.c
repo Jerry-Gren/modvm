@@ -55,7 +55,7 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 	}
 
 	reg = modvm_devm_zalloc(dev, sizeof(*reg));
-	if (unlikely(!reg))
+	if (!reg)
 		return -ENOMEM;
 
 	reg->dev = dev;
@@ -66,7 +66,7 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 	list_add_tail(&reg->node, list);
 
 	ret = modvm_devm_add_action(dev, bus_region_release, reg);
-	if (unlikely(ret < 0)) {
+	if (ret < 0) {
 		list_del(&reg->node);
 		return ret;
 	}

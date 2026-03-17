@@ -67,12 +67,16 @@ static uint32_t virtio_pci_read_config(struct modvm_pci_device *pci_dev,
 	switch (size) {
 	case 1:
 		return pci_dev->config_space[offset];
-	case 2:
-		return le16_to_cpu(
-			*(uint16_t *)(pci_dev->config_space + offset));
-	case 4:
-		return le32_to_cpu(
-			*(uint32_t *)(pci_dev->config_space + offset));
+	case 2: {
+		uint16_t val;
+		memcpy(&val, &pci_dev->config_space[offset], 2);
+		return le16_to_cpu(val);
+	}
+	case 4: {
+		uint32_t val;
+		memcpy(&val, &pci_dev->config_space[offset], 4);
+		return le32_to_cpu(val);
+	}
 	default:
 		return ~0U;
 	}
@@ -87,9 +91,8 @@ static void virtio_pci_write_config(struct modvm_pci_device *pci_dev,
 		return;
 
 	if (offset == 0x10 && val == 0xFFFFFFFF && size == 4) {
-		uint32_t size_mask = ~(ctx->bar0_size - 1);
-		*(uint32_t *)(pci_dev->config_space + offset) =
-			cpu_to_le32(size_mask);
+		uint32_t size_mask = cpu_to_le32(~(ctx->bar0_size - 1));
+		memcpy(&pci_dev->config_space[offset], &size_mask, 4);
 		return;
 	}
 
@@ -97,14 +100,16 @@ static void virtio_pci_write_config(struct modvm_pci_device *pci_dev,
 	case 1:
 		pci_dev->config_space[offset] = (uint8_t)val;
 		break;
-	case 2:
-		*(uint16_t *)(pci_dev->config_space + offset) =
-			cpu_to_le16((uint16_t)val);
+	case 2: {
+		uint16_t v16 = cpu_to_le16((uint16_t)val);
+		memcpy(&pci_dev->config_space[offset], &v16, 2);
 		break;
-	case 4:
-		*(uint32_t *)(pci_dev->config_space + offset) =
-			cpu_to_le32(val);
+	}
+	case 4: {
+		uint32_t v32 = cpu_to_le32(val);
+		memcpy(&pci_dev->config_space[offset], &v32, 4);
 		break;
+	}
 	}
 }
 
@@ -147,16 +152,18 @@ static uint64_t virtio_pci_bar0_read(struct modvm_device *dev, uint64_t offset,
 		case 1:
 			val = *((uint8_t *)&ctx->common_cfg + offset);
 			break;
-		case 2:
-			val = le16_to_cpu(
-				*(uint16_t *)((uint8_t *)&ctx->common_cfg +
-					      offset));
+		case 2: {
+			uint16_t v16;
+			memcpy(&v16, (uint8_t *)&ctx->common_cfg + offset, 2);
+			val = le16_to_cpu(v16);
 			break;
-		case 4:
-			val = le32_to_cpu(
-				*(uint32_t *)((uint8_t *)&ctx->common_cfg +
-					      offset));
+		}
+		case 4: {
+			uint32_t v32;
+			memcpy(&v32, (uint8_t *)&ctx->common_cfg + offset, 4);
+			val = le32_to_cpu(v32);
 			break;
+		}
 		}
 		return val;
 	}
@@ -189,17 +196,29 @@ static void virtio_pci_bar0_write(struct modvm_device *dev, uint64_t offset,
 		case 1:
 			*((uint8_t *)&ctx->common_cfg + offset) = (uint8_t)val;
 			break;
-		case 2:
-			*(uint16_t *)((uint8_t *)&ctx->common_cfg + offset) =
-				cpu_to_le16((uint16_t)val);
+		case 2: {
+			uint16_t v16 = cpu_to_le16((uint16_t)val);
+			memcpy((uint8_t *)&ctx->common_cfg + offset, &v16, 2);
 			break;
-		case 4:
-			*(uint32_t *)((uint8_t *)&ctx->common_cfg + offset) =
-				cpu_to_le32((uint32_t)val);
+		}
+		case 4: {
+			uint32_t v32 = cpu_to_le32((uint32_t)val);
+			memcpy((uint8_t *)&ctx->common_cfg + offset, &v32, 4);
 			break;
+		}
 		}
 
 		q_sel = le16_to_cpu(ctx->common_cfg.queue_select);
+
+		if (offset ==
+		    offsetof(struct virtio_pci_common_cfg, queue_select)) {
+			if (q_sel < vdev->nr_vqs)
+				ctx->common_cfg.queue_size = cpu_to_le16(
+					virtqueue_get_size(vdev->vqs[q_sel]));
+			else
+				ctx->common_cfg.queue_size = 0;
+			return;
+		}
 
 		if (offset ==
 		    offsetof(struct virtio_pci_common_cfg, guest_feature)) {
@@ -299,62 +318,63 @@ static void virtio_pci_build_config_space(struct virtio_pci_ctx *ctx,
 					  uint64_t bar0_base)
 {
 	uint8_t *cfg = ctx->pci_dev.config_space;
-	struct virtio_pci_cap *cap;
-	struct virtio_pci_notify_cap *notif;
+	uint16_t v16;
+	uint32_t v32;
+	struct virtio_pci_cap cap = { 0 };
+	struct virtio_pci_notify_cap notif = { 0 };
 
 	/* PCI Header Type 0 */
-	*(uint16_t *)&cfg[0x00] = cpu_to_le16(0x1AF4); /* Vendor: Red Hat */
-	*(uint16_t *)&cfg[0x02] = cpu_to_le16(0x1040 + ctx->vdev->device_id);
-	*(uint16_t *)&cfg[0x04] =
-		cpu_to_le16(0x0002); /* Command: Memory Space Enable */
-	*(uint16_t *)&cfg[0x06] =
-		cpu_to_le16(0x0010); /* Status: Capabilities List */
+	v16 = cpu_to_le16(0x1AF4);
+	memcpy(&cfg[0x00], &v16, 2); /* Vendor: Red Hat */
+	v16 = cpu_to_le16(0x1040 + ctx->vdev->device_id);
+	memcpy(&cfg[0x02], &v16, 2);
+	v16 = cpu_to_le16(0x0002);
+	memcpy(&cfg[0x04], &v16, 2); /* Command: Memory Space Enable */
+	v16 = cpu_to_le16(0x0010);
+	memcpy(&cfg[0x06], &v16, 2); /* Status: Capabilities List */
 	cfg[0x08] = 0x01; /* Revision ID: 1 (Virtio 1.0) */
 	cfg[0x0B] = 0x01; /* Class Code: Mass Storage (simplified) */
 
-	*(uint32_t *)&cfg[0x10] = cpu_to_le32((uint32_t)bar0_base); /* BAR 0 */
+	v32 = cpu_to_le32((uint32_t)bar0_base);
+	memcpy(&cfg[0x10], &v32, 4); /* BAR 0 */
 	cfg[0x34] = 0x40; /* Capabilities Pointer */
 
 	/* Capability 1: Common Configuration */
-	cap = (struct virtio_pci_cap *)&cfg[0x40];
-	cap->cap_vndr = 0x09; /* PCI_CAP_ID_VNDR */
-	cap->cap_next = 0x50;
-	cap->cap_len = sizeof(*cap);
-	cap->cfg_type = VIRTIO_PCI_CAP_COMMON_CFG;
-	cap->bar = 0;
-	cap->offset = cpu_to_le32(0x000);
-	cap->length = cpu_to_le32(0x100);
+	cap.cap_vndr = 0x09; /* PCI_CAP_ID_VNDR */
+	cap.cap_next = 0x50;
+	cap.cap_len = sizeof(cap);
+	cap.cfg_type = VIRTIO_PCI_CAP_COMMON_CFG;
+	cap.bar = 0;
+	cap.offset = cpu_to_le32(0x000);
+	cap.length = cpu_to_le32(0x100);
+	memcpy(&cfg[0x40], &cap, sizeof(cap));
 
 	/* Capability 2: Notify Configuration */
-	notif = (struct virtio_pci_notify_cap *)&cfg[0x50];
-	notif->cap.cap_vndr = 0x09;
-	notif->cap.cap_next = 0x68;
-	notif->cap.cap_len = sizeof(*notif);
-	notif->cap.cfg_type = VIRTIO_PCI_CAP_NOTIFY_CFG;
-	notif->cap.bar = 0;
-	notif->cap.offset = cpu_to_le32(0x100);
-	notif->cap.length = cpu_to_le32(0x100);
-	notif->notify_off_multiplier = cpu_to_le32(0);
+	notif.cap.cap_vndr = 0x09;
+	notif.cap.cap_next = 0x68;
+	notif.cap.cap_len = sizeof(notif);
+	notif.cap.cfg_type = VIRTIO_PCI_CAP_NOTIFY_CFG;
+	notif.cap.bar = 0;
+	notif.cap.offset = cpu_to_le32(0x100);
+	notif.cap.length = cpu_to_le32(0x100);
+	notif.notify_off_multiplier = cpu_to_le32(0);
+	memcpy(&cfg[0x50], &notif, sizeof(notif));
 
 	/* Capability 3: ISR Configuration */
-	cap = (struct virtio_pci_cap *)&cfg[0x68];
-	cap->cap_vndr = 0x09;
-	cap->cap_next = 0x78;
-	cap->cap_len = sizeof(*cap);
-	cap->cfg_type = VIRTIO_PCI_CAP_ISR_CFG;
-	cap->bar = 0;
-	cap->offset = cpu_to_le32(0x200);
-	cap->length = cpu_to_le32(0x100);
+	cap.cap_next = 0x78;
+	cap.cap_len = sizeof(cap);
+	cap.cfg_type = VIRTIO_PCI_CAP_ISR_CFG;
+	cap.offset = cpu_to_le32(0x200);
+	cap.length = cpu_to_le32(1); /* ISR is 1 byte per Virtio 1.0 Spec */
+	memcpy(&cfg[0x68], &cap, sizeof(cap));
 
 	/* Capability 4: Device Specific Configuration */
-	cap = (struct virtio_pci_cap *)&cfg[0x78];
-	cap->cap_vndr = 0x09;
-	cap->cap_next = 0x00;
-	cap->cap_len = sizeof(*cap);
-	cap->cfg_type = VIRTIO_PCI_CAP_DEVICE_CFG;
-	cap->bar = 0;
-	cap->offset = cpu_to_le32(0x300);
-	cap->length = cpu_to_le32(0x100);
+	cap.cap_next = 0x00;
+	cap.cap_len = sizeof(cap);
+	cap.cfg_type = VIRTIO_PCI_CAP_DEVICE_CFG;
+	cap.offset = cpu_to_le32(0x300);
+	cap.length = cpu_to_le32(0x100);
+	memcpy(&cfg[0x78], &cap, sizeof(cap));
 }
 
 static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
@@ -373,9 +393,11 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 
 	vdev = plat->vdev;
 	vdev->parent_dev = dev;
+	vdev->set_irq = virtio_pci_set_irq;
 
 	ctx->vdev = vdev;
 	ctx->bar0_size = (uint32_t)os_page_size();
+	ctx->common_cfg.num_queues = cpu_to_le16(vdev->nr_vqs);
 
 	if (plat->bar0_base == PCI_AUTO_MMIO) {
 		plat->bar0_base =
@@ -391,7 +413,6 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 	ctx->pci_dev.priv = ctx;
 	ctx->pci_dev.devfn = plat->devfn;
 	ctx->pci_dev.interrupt_pin = plat->interrupt_pin;
-	ctx->pci_dev.interrupt_line = plat->interrupt_line;
 
 	dev->ops = &virtio_pci_bar_ops;
 	dev->priv = ctx;
@@ -406,6 +427,9 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 	ret = modvm_devm_add_action(dev, virtio_vqs_cleanup, vdev);
 	if (ret < 0)
 		return ret;
+
+	/* MUST set this AFTER realize() assigns vdev->nr_vqs */
+	ctx->common_cfg.num_queues = cpu_to_le16(vdev->nr_vqs);
 
 	virtio_pci_build_config_space(ctx, plat->bar0_base);
 

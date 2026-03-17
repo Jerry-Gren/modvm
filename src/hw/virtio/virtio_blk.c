@@ -7,6 +7,7 @@
 #include <modvm/core/block.h>
 #include <modvm/hw/virtio/virtio.h>
 #include <modvm/hw/virtio/virtio_blk.h>
+#include <modvm/utils/byteorder.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
@@ -80,11 +81,11 @@ static uint64_t virtio_blk_get_features(struct virtio_device *vdev)
 	       VIRTIO_BLK_F_FLUSH;
 }
 
-static uint32_t virtio_blk_read_config(struct virtio_device *vdev,
+static uint64_t virtio_blk_read_config(struct virtio_device *vdev,
 				       uint64_t offset, uint8_t size)
 {
 	struct virtio_blk_ctx *ctx = vdev->priv;
-	uint32_t val = 0;
+	uint64_t val = 0;
 
 	if (WARN_ON(offset + size > sizeof(ctx->config)))
 		return 0;
@@ -123,7 +124,9 @@ static void virtio_blk_notify_queue(struct virtio_device *vdev,
 		uint8_t *status_byte;
 		uint64_t offset;
 		uint32_t written_len = 0;
+		uint32_t type;
 		int i;
+		ssize_t io_ret;
 
 		/* Minimal valid chain: Header -> [Data...] -> Status */
 		if (unlikely(num_bufs < 2)) {
@@ -140,32 +143,46 @@ static void virtio_blk_notify_queue(struct virtio_device *vdev,
 			goto push_desc;
 		}
 
-		offset = hdr->sector * SECTOR_SIZE;
+		type = le32_to_cpu(hdr->type);
+		offset = le64_to_cpu(hdr->sector) * SECTOR_SIZE;
 
-		switch (hdr->type) {
+		switch (type) {
 		case VIRTIO_BLK_T_IN:
+			*status_byte = VIRTIO_BLK_S_OK;
 			for (i = 1; i < num_bufs - 1; i++) {
 				if (likely(bufs[i].is_write)) {
-					backend->ops->read(backend, bufs[i].hva,
-							   bufs[i].len, offset);
+					io_ret = backend->ops->read(backend,
+								    bufs[i].hva,
+								    bufs[i].len,
+								    offset);
+					if (unlikely(io_ret !=
+						     (ssize_t)bufs[i].len)) {
+						*status_byte =
+							VIRTIO_BLK_S_IOERR;
+						break;
+					}
 					offset += bufs[i].len;
 					written_len += bufs[i].len;
 				}
 			}
-			*status_byte = VIRTIO_BLK_S_OK;
 			break;
 
 		case VIRTIO_BLK_T_OUT:
+			*status_byte = VIRTIO_BLK_S_OK;
 			for (i = 1; i < num_bufs - 1; i++) {
 				if (likely(!bufs[i].is_write)) {
-					backend->ops->write(backend,
-							    bufs[i].hva,
-							    bufs[i].len,
-							    offset);
+					io_ret = backend->ops->write(
+						backend, bufs[i].hva,
+						bufs[i].len, offset);
+					if (unlikely(io_ret !=
+						     (ssize_t)bufs[i].len)) {
+						*status_byte =
+							VIRTIO_BLK_S_IOERR;
+						break;
+					}
 					offset += bufs[i].len;
 				}
 			}
-			*status_byte = VIRTIO_BLK_S_OK;
 			break;
 
 		case VIRTIO_BLK_T_FLUSH:
@@ -195,7 +212,7 @@ push_desc:
 	}
 
 	if (likely(need_irq))
-		virtio_mmio_set_irq(vdev);
+		vdev->set_irq(vdev);
 }
 
 static const struct virtio_device_ops virtio_blk_ops = {
