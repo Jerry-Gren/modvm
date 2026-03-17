@@ -17,6 +17,8 @@
 #undef pr_fmt
 #define pr_fmt(fmt) "uart_16550a: " fmt
 
+#define UART_FIFO_SIZE 16
+
 /**
  * struct uart_16550a_ctx - internal state machine for the 16550a uart
  * @lock: mutex to serialize access from multiple executing processors
@@ -31,8 +33,15 @@
  * @lsr: lsr register reflecting transmission and reception electrical states
  * @msr: msr register reflecting incoming modem control lines
  * @scr: scr register providing general purpose storage
- * @thr: emulated outgoing data latch
- * @rbr: emulated incoming data latch
+ * @rx_fifo: 16-byte receiver ring buffer
+ * @rx_head: write index for rx_fifo
+ * @rx_tail: read index for rx_fifo
+ * @rx_cnt: current number of bytes in rx_fifo
+ * @tx_fifo: 16-byte transmitter ring buffer
+ * @tx_head: write index for tx_fifo
+ * @tx_tail: read index for tx_fifo
+ * @tx_cnt: current number of bytes in tx_fifo
+ * @rx_trigger_level: cached interrupt trigger watermark based on FCR
  * @thre_int_pending: internal flip-flop for edge-triggered thre interrupts
  */
 struct uart_16550a_ctx {
@@ -50,8 +59,29 @@ struct uart_16550a_ctx {
 	uint8_t msr __guarded_by(lock);
 	uint8_t scr __guarded_by(lock);
 
-	uint8_t thr __guarded_by(lock);
-	uint8_t rbr __guarded_by(lock);
+	/*
+	 * PC16550D features integrated transmit and receive FIFOs.
+	 * Both FIFOs have a maximum capacity of 16 bytes.
+	 */
+	uint8_t rx_fifo[UART_FIFO_SIZE] __guarded_by(lock);
+	uint8_t rx_head __guarded_by(lock);
+	uint8_t rx_tail __guarded_by(lock);
+	uint8_t rx_cnt __guarded_by(lock);
+
+	uint8_t tx_fifo[UART_FIFO_SIZE] __guarded_by(lock);
+	uint8_t tx_head __guarded_by(lock);
+	uint8_t tx_tail __guarded_by(lock);
+	uint8_t tx_cnt __guarded_by(lock);
+
+	/*
+	 * Trigger level for RCVR FIFO interrupt (1, 4, 8, or 14 bytes).
+	 */
+	uint8_t rx_trigger_level __guarded_by(lock);
+
+	/*
+	 * FIFO Timeout interrupt pending state.
+	 */
+	bool rx_timeout __guarded_by(lock);
 
 	bool thre_int_pending __guarded_by(lock);
 };
@@ -69,6 +99,132 @@ static inline bool uart_is_loopback(struct uart_16550a_ctx *ctx)
 	return (ctx->mcr & UART_MCR_LOOP) != 0;
 }
 
+/**
+ * uart_fifo_rx_clear - flush the receiver ring buffer
+ * @ctx: the uart state machine context
+ *
+ * Resets the read/write indices and byte counter. According to the
+ * hardware specification, this action must also clear the associated
+ * line status bits.
+ */
+static inline void uart_fifo_rx_clear(struct uart_16550a_ctx *ctx)
+	__must_hold(ctx->lock)
+{
+	ctx->rx_head = 0;
+	ctx->rx_tail = 0;
+	ctx->rx_cnt = 0;
+
+	/*
+	 * 8.6.4: Writing a 1 to FCR1 clears all bytes in the RCVR FIFO 
+	 * and resets its counter logic to 0. 
+	 */
+	ctx->lsr &= ~(UART_LSR_DR | UART_LSR_OE);
+}
+
+/**
+ * uart_fifo_tx_clear - flush the transmitter ring buffer
+ * @ctx: the uart state machine context
+ */
+static inline void uart_fifo_tx_clear(struct uart_16550a_ctx *ctx)
+	__must_hold(ctx->lock)
+{
+	ctx->tx_head = 0;
+	ctx->tx_tail = 0;
+	ctx->tx_cnt = 0;
+
+	/*
+	 * 8.6.4: Writing a 1 to FCR2 clears all bytes in the XMIT FIFO.
+	 * When XMIT FIFO is empty, THRE and TEMT must reflect this state.
+	 */
+	ctx->lsr |= (UART_LSR_THRE | UART_LSR_TEMT);
+	ctx->thre_int_pending = true;
+}
+
+/**
+ * uart_fifo_rx_push - enqueue a received character into the ring buffer
+ * @ctx: the uart state machine context
+ * @c: the byte received from the host backend
+ *
+ * Datasheet 8.6.3: If the FIFO continues to fill beyond the trigger level,
+ * an overrun error will occur only after the FIFO is full. The character
+ * in the shift register is overwritten, but not transferred to the FIFO.
+ */
+static inline void uart_fifo_rx_push(struct uart_16550a_ctx *ctx, uint8_t c)
+	__must_hold(ctx->lock)
+{
+	if (unlikely(ctx->rx_cnt >= UART_FIFO_SIZE)) {
+		ctx->lsr |= UART_LSR_OE;
+		return;
+	}
+
+	ctx->rx_fifo[ctx->rx_head] = c;
+	ctx->rx_head = (ctx->rx_head + 1) % UART_FIFO_SIZE;
+	ctx->rx_cnt++;
+	ctx->lsr |= UART_LSR_DR;
+}
+
+/**
+ * uart_fifo_rx_pop - dequeue a character from the ring buffer
+ * @ctx: the uart state machine context
+ *
+ * Datasheet 8.4.1: Reading the RCVR FIFO clears the timeout interrupt.
+ * Returns the dequeued byte, or 0 if empty.
+ */
+static inline uint8_t uart_fifo_rx_pop(struct uart_16550a_ctx *ctx)
+	__must_hold(ctx->lock)
+{
+	uint8_t val;
+
+	if (unlikely(ctx->rx_cnt == 0))
+		return 0;
+
+	val = ctx->rx_fifo[ctx->rx_tail];
+	ctx->rx_tail = (ctx->rx_tail + 1) % UART_FIFO_SIZE;
+	ctx->rx_cnt--;
+
+	ctx->rx_timeout = false;
+
+	if (ctx->rx_cnt == 0)
+		ctx->lsr &= ~UART_LSR_DR;
+
+	return val;
+}
+
+/**
+ * uart_flush_tx - drain the transmitter ring buffer to the host backend
+ * @ctx: the uart state machine context
+ *
+ * Flushes all pending bytes in the TX FIFO to the attached character device.
+ * Upon completion, updates the Line Status Register to reflect an empty
+ * shift register and triggers the THRE interrupt.
+ */
+static void uart_flush_tx(struct uart_16550a_ctx *ctx) __must_hold(ctx->lock)
+{
+	if (likely(ctx->tx_cnt > 0)) {
+		if (likely(ctx->console && ctx->console->ops->write)) {
+			uint8_t buf[UART_FIFO_SIZE];
+			int i;
+
+			for (i = 0; i < ctx->tx_cnt; i++) {
+				buf[i] = ctx->tx_fifo[ctx->tx_tail];
+				ctx->tx_tail =
+					(ctx->tx_tail + 1) % UART_FIFO_SIZE;
+			}
+
+			ctx->console->ops->write(ctx->console, buf,
+						 ctx->tx_cnt);
+		}
+		ctx->tx_cnt = 0;
+	}
+
+	/*
+	 * Datasheet 8.6.3: TEMT and THRE are set to 1 when both the THR 
+	 * and TSR are empty.
+	 */
+	ctx->lsr |= (UART_LSR_THRE | UART_LSR_TEMT);
+	ctx->thre_int_pending = true;
+}
+
 static uint8_t uart_get_iir(struct uart_16550a_ctx *ctx) __must_hold(ctx->lock)
 {
 	/*
@@ -78,38 +234,40 @@ static uint8_t uart_get_iir(struct uart_16550a_ctx *ctx) __must_hold(ctx->lock)
          * if the logic tree grows more complex in the future.
          */
 	uint8_t iir = (ctx->fcr & UART_FCR_ENABLE_FIFO) ? 0xc0 : 0x00;
+	bool trigger_reached;
 
-	/* Priority 1: Receiver Line Status*/
+	/* Priority 1: Receiver Line Status (Errors) */
 	if ((ctx->ier & UART_IER_RLSI) &&
 	    (ctx->lsr & UART_LSR_BRK_ERROR_BITS)) {
-		iir |= 0x06;
-		return iir;
+		return iir | 0x06;
 	}
 
 	/*
-	 * Priority 2: Received Data Available.
-	 * Triggered if Data Ready (DR) is set AND the interrupt is enabled.
+	 * Priority 2: Received Data Available OR Character Timeout.
+	 * Check if the FIFO byte count meets the programmed trigger level.
 	 */
-	if ((ctx->ier & UART_IER_RDI) && (ctx->lsr & UART_LSR_DR)) {
-		iir |= 0x04;
-		return iir;
+	trigger_reached = (ctx->fcr & UART_FCR_ENABLE_FIFO) ?
+				  (ctx->rx_cnt >= ctx->rx_trigger_level) :
+				  (ctx->rx_cnt > 0);
+	if (ctx->ier & UART_IER_RDI) {
+		if (trigger_reached)
+			return iir | 0x04;
+		else if (ctx->rx_timeout)
+			return iir | 0x0C; /* Timeout indication */
 	}
 
 	/* Priority 3: Transmitter Holding Register Empty */
 	if ((ctx->ier & UART_IER_THRI) && ctx->thre_int_pending) {
-		iir |= 0x02;
-		return iir;
+		return iir | 0x02;
 	}
 
 	/* Priority 4: Modem Status */
 	if ((ctx->ier & UART_IER_MSI) && (ctx->msr & UART_MSR_ANY_DELTA)) {
-		iir |= 0x00;
-		return iir;
+		return iir | 0x00;
 	}
 
 	/* No pending logical interrupts */
-	iir |= UART_IIR_NO_INT;
-	return iir;
+	return iir | UART_IIR_NO_INT;
 }
 
 static void uart_update_irq(struct uart_16550a_ctx *ctx) __must_hold(ctx->lock)
@@ -181,13 +339,12 @@ static uint8_t uart_read_reg(struct uart_16550a_ctx *ctx, uint16_t offset)
 		if (unlikely(uart_is_dlab_set(ctx)))
 			return ctx->dll;
 
-		val = ctx->rbr;
 		/*
-		 * Reading the Receiver Buffer clears the Data Ready (DR) bit
-		 * in the Line Status Register, per 8.6.3.
+		 * Datasheet 8.6.3: Reading the Receiver Buffer clears the DR bit
+		 * implicitly via our uart_fifo_rx_pop() helper. It also clears 
+		 * the timeout condition.
 		 */
-		ctx->lsr &= ~UART_LSR_DR;
-		return val;
+		return uart_fifo_rx_pop(ctx);
 
 	case UART_IER:
 		if (unlikely(uart_is_dlab_set(ctx)))
@@ -197,10 +354,10 @@ static uint8_t uart_read_reg(struct uart_16550a_ctx *ctx, uint16_t offset)
 	case UART_IIR:
 		val = uart_get_iir(ctx);
 		/*
-		 * Reading IIR acknowledges the THRE interrupt per datasheet.
-		 * Priority 3 mask is 0x02.
+		 * Datasheet 8.4.1 & Table 5: Reading the IIR Register (if source of 
+		 * interrupt) clears the Transmitter Holding Register Empty interrupt. 
 		 */
-		if ((val & 0x0f) == 0x02)
+		if ((val & UART_IIR_ID) == 0x02)
 			ctx->thre_int_pending = false;
 		return val;
 
@@ -211,12 +368,14 @@ static uint8_t uart_read_reg(struct uart_16550a_ctx *ctx, uint16_t offset)
 		return ctx->mcr;
 
 	case UART_LSR:
-		/*
-		 * Physical state: transmission is infinitely fast,
-		 * so holding register and shift register are always empty.
-		 */
-		ctx->lsr |= (UART_LSR_THRE | UART_LSR_TEMT);
 		val = ctx->lsr;
+		/*
+		 * 架构折中说明 (Architecture Trade-off):
+		 * TI Manual 8.6.3: In the FIFO mode LSR7 is set when there is at least 
+		 * one parity error, framing error or break indication in the FIFO.
+		 */
+		val &= ~0x80;
+
 		ctx->lsr &= ~UART_LSR_BRK_ERROR_BITS;
 		return val;
 
@@ -250,35 +409,28 @@ static void uart_write_reg(struct uart_16550a_ctx *ctx, uint16_t offset,
 
 		if (unlikely(uart_is_loopback(ctx))) {
 			/*
-			 * In loopback mode, transmitted data is immediately
-			 * received in the Receive Buffer Register, and Data Ready
-			 * bit is set in LSR.
+			 * Datasheet 8.6.7: In loopback mode, data that is transmitted 
+			 * is immediately received.
 			 */
-			if (ctx->lsr & UART_LSR_DR) {
-				ctx->lsr |= UART_LSR_OE;
-			} else {
-				ctx->rbr = val;
-				ctx->lsr |= UART_LSR_DR;
-			}
+			uart_fifo_rx_push(ctx, val);
 		} else {
-			/*
-			 * Dispatch the payload to the attached host backend.
-			 * The frontend hardware does not care how the backend processes it.
-			 */
-			if (likely(ctx->console && ctx->console->ops->write))
-				ctx->console->ops->write(ctx->console, &val, 1);
-		}
+			ctx->tx_fifo[ctx->tx_head] = val;
+			ctx->tx_head = (ctx->tx_head + 1) % UART_FIFO_SIZE;
+			ctx->tx_cnt++;
 
-		/**
-		 * Emulated transmission is instantaneous. The transmit
-                 * holding register (THR) and transmit shift register (TSR)
-                 * remain empty at all times in this model.
-                 * We trigger the THRE interrupt pending flag but do not
-                 * clear the THRE status bit in the LSR, reflecting the
-                 * immediate consumption of the data.
-                 */
-		ctx->thre_int_pending = true;
-		/* uart->lsr &= ~UART_LSR_THRE; */
+			ctx->lsr &= ~(UART_LSR_THRE | UART_LSR_TEMT);
+			ctx->thre_int_pending = false;
+
+			/*
+			 * Don't do this:
+			 *
+			 * if (!(ctx->fcr & UART_FCR_ENABLE_FIFO) ||
+			 *     ctx->tx_cnt >= UART_FIFO_SIZE) {
+			 * 	uart_flush_tx(ctx);
+			 * }
+			 */
+			uart_flush_tx(ctx);
+		}
 		break;
 
 	case UART_IER: {
@@ -297,8 +449,11 @@ static void uart_write_reg(struct uart_16550a_ctx *ctx, uint16_t offset,
 		 * currently empty (which it always is in our simulation),
 		 * the interrupt must fire immediately to satisfy OS IRQ probing.
 		 */
-		if (!(old_ier & UART_IER_THRI) && (ctx->ier & UART_IER_THRI))
-			ctx->thre_int_pending = true;
+		if (!(old_ier & UART_IER_THRI) && (ctx->ier & UART_IER_THRI)) {
+			if (ctx->tx_cnt == 0) {
+				ctx->thre_int_pending = true;
+			}
+		}
 		break;
 	}
 
@@ -307,18 +462,47 @@ static void uart_write_reg(struct uart_16550a_ctx *ctx, uint16_t offset,
 		val &= 0xcf;
 
 		/*
-		 * Datasheet 8.6.4:
-		 * 1. Writing 0 to bit 0 (ENABLE_FIFO) will disable other bits
-		 * 2. Writing 1 to bit 1 (CLEAR_RCVR) or bit 2 (CLEAR_XMIT) clears themselves
+		 * Datasheet 8.6.4: Resetting FCR0 will clear all bytes in both FIFOs.
+		 * When changing from the FIFO Mode to the 16450 Mode and vice versa,
+		 * data is automatically cleared from the FIFOs.
 		 */
 		if (!(val & UART_FCR_ENABLE_FIFO)) {
-			ctx->fcr = val & UART_FCR_ENABLE_FIFO;
-			ctx->lsr &= ~(UART_LSR_DR | UART_LSR_OE);
-		} else {
-			ctx->fcr = val &
-				   ~(UART_FCR_CLEAR_RCVR | UART_FCR_CLEAR_XMIT);
-			if (val & UART_FCR_CLEAR_RCVR)
-				ctx->lsr &= ~(UART_LSR_DR | UART_LSR_OE);
+			ctx->fcr = 0;
+			ctx->rx_trigger_level = 1;
+			uart_fifo_rx_clear(ctx);
+			uart_fifo_tx_clear(ctx);
+			break;
+		}
+
+		/*
+		 * Datasheet 8.6.4: Bits 1 and 2 are self-clearing. We store the
+		 * other bits (like DMA mode and trigger levels) but strip these two.
+		 */
+		ctx->fcr = val & ~(UART_FCR_CLEAR_RCVR | UART_FCR_CLEAR_XMIT);
+
+		if (val & UART_FCR_CLEAR_RCVR)
+			uart_fifo_rx_clear(ctx);
+
+		if (val & UART_FCR_CLEAR_XMIT)
+			uart_fifo_tx_clear(ctx);
+
+		/*
+		 * Datasheet 8.6.4: FCR6 and FCR7 are used to set the trigger level
+		 * for the RCVR FIFO interrupt.
+		 */
+		switch (val & 0xc0) {
+		case 0x00:
+			ctx->rx_trigger_level = 1;
+			break;
+		case 0x40:
+			ctx->rx_trigger_level = 4;
+			break;
+		case 0x80:
+			ctx->rx_trigger_level = 8;
+			break;
+		case 0xc0:
+			ctx->rx_trigger_level = 14;
+			break;
 		}
 		break;
 
@@ -409,21 +593,19 @@ static void uart_rx_cb(void *data, const uint8_t *buf, size_t len)
 
 	os_mutex_lock(ctx->lock);
 
-	/*
-	 * we currently emulate a 16450-style single-byte buffer (fifo disabled).
-	 * in a robust implementation, we would queue this into the fcr-managed
-	 * fifo ring buffer.
-	 */
-	for (i = 0; i < len; i++) {
-		/*
-		 * overrun condition: previous character was not read by the cpu
-		 * before the next one arrived. the old character is overwritten.
-		 */
-		if (ctx->lsr & UART_LSR_DR)
-			ctx->lsr |= UART_LSR_OE;
+	for (i = 0; i < len; i++)
+		uart_fifo_rx_push(ctx, buf[i]);
 
-		ctx->rbr = buf[i];
-		ctx->lsr |= UART_LSR_DR;
+	/*
+	 * Datasheet 8.4.1: Character Timeout Interrupt.
+	 * Triggers when the FIFO is not empty, but no characters have been
+	 * added or removed for 4 character times.
+	 */
+	if ((ctx->fcr & UART_FCR_ENABLE_FIFO) && ctx->rx_cnt > 0 &&
+	    ctx->rx_cnt < ctx->rx_trigger_level) {
+		ctx->rx_timeout = true;
+	} else {
+		ctx->rx_timeout = false;
 	}
 
 	/* evaluate the interrupt lines after state mutation */

@@ -201,9 +201,10 @@ void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
 
 	for (i = 0; i < loop->nr_events; i++) {
 		if (loop->poll_fds[i].fd == fd) {
-			/* * Soft-delete. POSIX poll() will natively ignore fds < 0.
-             * The slot will be collected during the next compaction pass.
-             */
+			/*
+			 * Soft-delete. POSIX poll() will natively ignore fds < 0.
+			 * The slot will be collected during the next compaction pass.
+			 */
 			loop->poll_fds[i].fd = -1;
 			loop->poll_fds[i].events = 0;
 			loop->poll_fds[i].revents = 0;

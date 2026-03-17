@@ -49,6 +49,11 @@ static void print_usage(const char *prog_name)
  */
 int main(int argc, char **argv)
 {
+	if (argc == 1) {
+		print_usage(argv[0]);
+		return EXIT_SUCCESS;
+	}
+
 	struct modvm_ctx vm;
 	struct modvm_config cfg = {
 		.accel_name = "kvm",

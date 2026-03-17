@@ -39,19 +39,26 @@ static int stdio_write(struct modvm_chardev *dev, const uint8_t *buf,
 	for (i = 0; i < len; i++) {
 		ctx->tx_buf[ctx->tx_len++] = buf[i];
 
-		if (unlikely(buf[i] == '\n' ||
-			     ctx->tx_len >= STDIO_TX_BUF_SIZE)) {
+		if (unlikely(ctx->tx_len >= STDIO_TX_BUF_SIZE)) {
 			ssize_t ret =
 				write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len);
-
 			if (unlikely(ret < 0 && errno != EAGAIN &&
 				     errno != EWOULDBLOCK))
 				pr_warn_once(
 					"untracked standard output pipe congestion %d\n",
 					errno);
-
 			ctx->tx_len = 0;
 		}
+	}
+
+	if (likely(ctx->tx_len > 0)) {
+		ssize_t ret = write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len);
+		if (unlikely(ret < 0 && errno != EAGAIN &&
+			     errno != EWOULDBLOCK))
+			pr_warn_once(
+				"untracked standard output pipe congestion %d\n",
+				errno);
+		ctx->tx_len = 0;
 	}
 
 	return 0;
