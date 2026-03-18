@@ -20,7 +20,7 @@
 #define pr_fmt(fmt) "kvm: " fmt
 
 /**
- * kvm_mem_map_cb - bridge between core memory allocator and KVM hardware paging
+ * kvm_mem_region_map_cb - bridge between core memory allocator and KVM hardware paging
  * @space: the abstract memory space
  * @reg: the specific memory region to map
  * @data: pointer to the private KVM state structure
@@ -31,8 +31,8 @@
  *
  * Return: 0 on success, or a negative error code.
  */
-static int kvm_mem_map_cb(struct modvm_mem_space *space,
-			  struct modvm_mem_region *reg, void *data)
+static int kvm_mem_region_map_cb(struct modvm_mem_space *space,
+				 struct modvm_mem_region *reg, void *data)
 {
 	struct modvm_kvm_state *state = data;
 	int slot = state->mem_slot_idx++;
@@ -60,7 +60,7 @@ static int kvm_mem_map_cb(struct modvm_mem_space *space,
 }
 
 /**
- * kvm_mem_unmap_cb - dismantle hardware memory mappings
+ * kvm_mem_region_unmap_cb - dismantle hardware memory mappings
  * @space: the abstract memory space
  * @reg: the memory region to dismantle
  * @data: pointer to the private KVM state structure
@@ -69,8 +69,8 @@ static int kvm_mem_map_cb(struct modvm_mem_space *space,
  * for the specific slot. This prevents use-after-free corruptions in the
  * host kernel if the guest accesses the unmapped GPA.
  */
-static void kvm_mem_unmap_cb(struct modvm_mem_space *space,
-			     struct modvm_mem_region *reg, void *data)
+static void kvm_mem_region_unmap_cb(struct modvm_mem_space *space,
+				    struct modvm_mem_region *reg, void *data)
 {
 	struct modvm_kvm_state *state = data;
 	struct kvm_userspace_memory_region hw_reg = {
@@ -134,8 +134,8 @@ static int kvm_accel_init(struct modvm_accel *accel)
 	state->mem_slot_idx = 0;
 	accel->priv = state;
 
-	ret = modvm_mem_space_init(&accel->mem_space, kvm_mem_map_cb,
-				   kvm_mem_unmap_cb, state);
+	ret = modvm_mem_space_init(&accel->mem_space, kvm_mem_region_map_cb,
+				   kvm_mem_region_unmap_cb, state);
 	if (ret < 0) {
 		pr_err("failed to initialize physical memory tracking\n");
 		goto err_close_vm;
@@ -165,14 +165,14 @@ err_free_state:
 }
 
 /**
- * kvm_accel_setup_irqchip - synthesize architectural interrupt controllers
+ * kvm_accel_irqchip_setup - synthesize architectural interrupt controllers
  * @accel: the initialized acceleration context
  *
  * Requests the kernel to instantiate the local APIC, IOAPIC, and legacy PIT.
  *
  * Return: 0 on success, or a negative error code.
  */
-static int kvm_accel_setup_irqchip(struct modvm_accel *accel)
+static int kvm_accel_irqchip_setup(struct modvm_accel *accel)
 {
 	struct kvm_pit_config pit_conf = { .flags = 0 };
 	struct modvm_kvm_state *state = accel->priv;
@@ -240,7 +240,7 @@ static void kvm_accel_destroy(struct modvm_accel *accel)
 static const struct modvm_accel_ops kvm_ops = {
 	.init = kvm_accel_init,
 	.destroy = kvm_accel_destroy,
-	.setup_irqchip = kvm_accel_setup_irqchip,
+	.setup_irqchip = kvm_accel_irqchip_setup,
 	.set_irq = kvm_accel_set_irq,
 };
 

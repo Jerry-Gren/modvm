@@ -3,12 +3,13 @@
 #include <errno.h>
 #include <stdatomic.h>
 
-#include <modvm/hw/virtio/virtqueue.h>
 #include <modvm/core/memory.h>
 #include <modvm/utils/byteorder.h>
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/err.h>
+
+#include "virtqueue.h"
 
 struct vring_avail {
 	uint16_t flags;

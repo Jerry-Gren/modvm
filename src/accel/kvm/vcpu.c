@@ -94,10 +94,10 @@ static int kvm_vcpu_set_regs_wrap(struct modvm_vcpu *vcpu,
 }
 
 /**
- * handle_mmio_exit - route memory-mapped IO traps to the system bus
+ * modvm_kvm_vcpu_handle_mmio_exit - route memory-mapped IO traps to the system bus
  * @vcpu: the trapped virtual processor
  */
-static void handle_mmio_exit(struct modvm_vcpu *vcpu)
+static void modvm_kvm_vcpu_handle_mmio_exit(struct modvm_vcpu *vcpu)
 {
 	struct modvm_kvm_vcpu_state *state = vcpu->priv;
 	struct kvm_run *run = state->run;
@@ -185,7 +185,7 @@ static int kvm_vcpu_run(struct modvm_vcpu *vcpu)
 
 		switch (run->exit_reason) {
 		case KVM_EXIT_MMIO:
-			handle_mmio_exit(vcpu);
+			modvm_kvm_vcpu_handle_mmio_exit(vcpu);
 			break;
 
 		case KVM_EXIT_HLT:

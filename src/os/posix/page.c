@@ -43,7 +43,7 @@ void *os_page_alloc(size_t size)
 	ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
 		   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
-	if (unlikely(ptr == MAP_FAILED))
+	if (ptr == MAP_FAILED)
 		return ERR_PTR(-ENOMEM);
 
 #ifdef MADV_HUGEPAGE

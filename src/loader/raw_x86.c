@@ -6,7 +6,7 @@
 
 #include <modvm/core/loader.h>
 #include <modvm/core/vcpu.h>
-#include <modvm/arch/x86/regs.h>
+#include <modvm/internal/arch/x86/regs.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/log.h>
 

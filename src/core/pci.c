@@ -98,8 +98,8 @@ int modvm_pci_device_register(struct modvm_pci_bus *bus,
 	return 0;
 }
 
-static struct modvm_pci_device *pci_bus_find_device(struct modvm_pci_bus *bus,
-						    uint8_t devfn)
+static struct modvm_pci_device *
+modvm_pci_bus_find_device(struct modvm_pci_bus *bus, uint8_t devfn)
 {
 	struct modvm_pci_device *pos;
 
@@ -129,7 +129,7 @@ uint32_t modvm_pci_bus_read_config(struct modvm_pci_bus *bus, uint8_t devfn,
 	if (unlikely(offset + size > PCI_CONFIG_SPACE_SIZE))
 		return ~0U;
 
-	pci_dev = pci_bus_find_device(bus, devfn);
+	pci_dev = modvm_pci_bus_find_device(bus, devfn);
 	if (unlikely(!pci_dev))
 		return ~0U;
 
@@ -155,7 +155,7 @@ void modvm_pci_bus_write_config(struct modvm_pci_bus *bus, uint8_t devfn,
 	if (unlikely(offset + size > PCI_CONFIG_SPACE_SIZE))
 		return;
 
-	pci_dev = pci_bus_find_device(bus, devfn);
+	pci_dev = modvm_pci_bus_find_device(bus, devfn);
 	if (unlikely(!pci_dev))
 		return;
 

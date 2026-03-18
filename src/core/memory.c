@@ -41,8 +41,17 @@ int modvm_mem_space_init(struct modvm_mem_space *space,
 	return 0;
 }
 
-static bool is_overlap(uint64_t base1, size_t size1, uint64_t base2,
-		       size_t size2)
+/**
+ * modvm_mem_region_is_overlap - check if two memory ranges overlap
+ * @base1: start address of first region
+ * @size1: length of first region
+ * @base2: start address of second region
+ * @size2: length of second region
+ *
+ * Return: true if overlapping, false otherwise.
+ */
+static bool modvm_mem_region_is_overlap(uint64_t base1, size_t size1,
+					uint64_t base2, size_t size2)
 {
 	return (base1 < base2 + size2) && (base2 < base1 + size1);
 }
@@ -84,7 +93,8 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 
 	list_for_each_entry(pos, &space->regions, node)
 	{
-		if (is_overlap(gpa, size, pos->gpa, pos->size)) {
+		if (modvm_mem_region_is_overlap(gpa, size, pos->gpa,
+						pos->size)) {
 			pr_err("topology overlap detected at gpa 0x%lx\n", gpa);
 			return -EBUSY;
 		}

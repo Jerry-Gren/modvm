@@ -15,13 +15,13 @@ struct devm_action_data {
 	void *data;
 };
 
-static void devm_memory_release(void *owner, void *res)
+static void modvm_devm_memory_release(void *owner, void *res)
 {
 	(void)owner;
 	(void)res;
 }
 
-static void devm_action_release(void *owner, void *res)
+static void modvm_devm_action_release(void *owner, void *res)
 {
 	struct devm_action_data *act = res;
 
@@ -44,7 +44,7 @@ void *modvm_devm_malloc(struct modvm_device *dev, size_t size)
 	if (WARN_ON(!dev || size == 0))
 		return NULL;
 
-	res = modvm_res_alloc(devm_memory_release, size);
+	res = modvm_res_alloc(modvm_devm_memory_release, size);
 	if (res)
 		modvm_res_add(&dev->devm_pool, res);
 
@@ -107,7 +107,7 @@ int __modvm_devm_add_action(struct modvm_device *dev, void (*action)(void *),
 	if (WARN_ON(!dev || !action))
 		return -EINVAL;
 
-	act = modvm_res_alloc(devm_action_release, sizeof(*act));
+	act = modvm_res_alloc(modvm_devm_action_release, sizeof(*act));
 	if (!act)
 		return -ENOMEM;
 

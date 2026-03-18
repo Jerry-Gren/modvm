@@ -14,13 +14,13 @@ struct ctxm_action_data {
 	void *data;
 };
 
-static void ctxm_memory_release(void *owner, void *res)
+static void modvm_ctxm_memory_release(void *owner, void *res)
 {
 	(void)owner;
 	(void)res;
 }
 
-static void ctxm_action_release(void *owner, void *res)
+static void modvm_ctxm_action_release(void *owner, void *res)
 {
 	struct ctxm_action_data *act = res;
 
@@ -43,7 +43,7 @@ void *modvm_ctxm_malloc(struct modvm_ctx *ctx, size_t size)
 	if (WARN_ON(!ctx || size == 0))
 		return NULL;
 
-	res = modvm_res_alloc(ctxm_memory_release, size);
+	res = modvm_res_alloc(modvm_ctxm_memory_release, size);
 	if (res)
 		modvm_res_add(&ctx->ctxm_pool, res);
 
@@ -109,7 +109,7 @@ int __modvm_ctxm_add_action(struct modvm_ctx *ctx, void (*action)(void *),
 	if (WARN_ON(!ctx || !action))
 		return -EINVAL;
 
-	act = modvm_res_alloc(ctxm_action_release, sizeof(*act));
+	act = modvm_res_alloc(modvm_ctxm_action_release, sizeof(*act));
 	if (!act)
 		return -ENOMEM;
 

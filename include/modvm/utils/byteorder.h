@@ -3,7 +3,7 @@
 #define MODVM_UTILS_BYTEORDER_H
 
 #include <stdint.h>
-#include <stddef.h>
+#include <modvm/utils/stddef.h>
 
 /* Use compiler built-ins for optimal byte swapping instructions */
 #define swab16(x) __builtin_bswap16(x)

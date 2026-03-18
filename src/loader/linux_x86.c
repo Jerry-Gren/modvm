@@ -7,14 +7,15 @@
 #include <modvm/core/loader.h>
 #include <modvm/core/memory.h>
 #include <modvm/core/vcpu.h>
-#include <modvm/arch/x86/regs.h>
-#include <modvm/loader/e820.h>
+#include <modvm/internal/arch/x86/regs.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/cmdline.h>
 
 #include <modvm/internal/loader.h>
+
+#include "e820.h"
 
 #undef pr_fmt
 #define pr_fmt(fmt) "linux_loader: " fmt
@@ -52,7 +53,7 @@ struct linux_loader_ctx {
 };
 
 /**
- * build_e820_table - synthesize the physical memory map for the guest kernel
+ * linux_x86_e820_table_build - synthesize the physical memory map for the guest kernel
  * @ctx: the global machine context containing ram configurations
  * @zero_page: host virtual address of the linux boot_params structure
  *
@@ -61,7 +62,7 @@ struct linux_loader_ctx {
  *
  * Return: 0 on success.
  */
-static int build_e820_table(struct modvm_ctx *ctx, uint8_t *zero_page)
+static int linux_x86_e820_table_build(struct modvm_ctx *ctx, uint8_t *zero_page)
 {
 	struct modvm_e820_entry *table =
 		(struct modvm_e820_entry *)(zero_page + BOOT_PARAM_E820_TABLE);
@@ -206,7 +207,7 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 		*(uint32_t *)(hva_zero_page + SETUP_CMDLINE_PTR) = 0;
 	}
 
-	build_e820_table(ctx, hva_zero_page);
+	linux_x86_e820_table_build(ctx, hva_zero_page);
 
 	fseek(fp, setup_size, SEEK_SET);
 	payload_size = file_size - setup_size;

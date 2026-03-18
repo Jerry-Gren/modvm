@@ -23,7 +23,7 @@ struct loader_instance_ctx {
 	void *priv;
 };
 
-static void loader_instance_release(void *data)
+static void modvm_loader_instance_release(void *data)
 {
 	struct loader_instance_ctx *inst = data;
 
@@ -48,7 +48,8 @@ void modvm_loader_class_register(const struct modvm_loader_class *cls)
 	loader_classes[nr_loader_classes++] = cls;
 }
 
-static const struct modvm_loader_class *loader_class_find(const char *name)
+static const struct modvm_loader_class *
+modvm_loader_class_find(const char *name)
 {
 	int i;
 
@@ -85,7 +86,7 @@ int modvm_loader_execute(struct modvm_ctx *ctx, const char *name,
 	if (WARN_ON(!ctx || !name || !opts))
 		return -EINVAL;
 
-	cls = loader_class_find(name);
+	cls = modvm_loader_class_find(name);
 	if (!cls) {
 		pr_err("boot protocol '%s' is not supported\n", name);
 		return -ENOENT;
@@ -107,9 +108,9 @@ int modvm_loader_execute(struct modvm_ctx *ctx, const char *name,
 	}
 
 	/* Enqueue cleanup callback for successful teardown */
-	ret = __modvm_ctxm_add_action(ctx, loader_instance_release, inst);
+	ret = __modvm_ctxm_add_action(ctx, modvm_loader_instance_release, inst);
 	if (ret < 0) {
-		loader_instance_release(inst);
+		modvm_loader_instance_release(inst);
 		return ret;
 	}
 

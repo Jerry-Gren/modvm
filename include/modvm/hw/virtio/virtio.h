@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <modvm/core/device.h>
 #include <modvm/core/irq.h>
-#include <modvm/hw/virtio/virtqueue.h>
 
 #define VIRTIO_MMIO_MAGIC 0x74726976 /* "virt" */
 #define VIRTIO_MMIO_VERSION_1 2 /* Virtio 1.0 (v2) */
@@ -14,6 +13,7 @@
 #define VIRTIO_MAX_VQS 8
 
 struct virtio_device;
+struct virtqueue;
 
 /**
  * struct virtio_device_ops - operations for specific virtio backends (e.g., blk, net)
@@ -40,25 +40,37 @@ struct virtio_device_ops {
 };
 
 /**
+ * struct virtio_transport_ops - methods provided by the parent transport bus
+ * @set_irq_cb: inject an interrupt into the guest operating system
+ */
+struct virtio_transport_ops {
+	void (*set_irq_cb)(void *transport_data);
+};
+
+/**
  * struct virtio_device - abstract base class for all virtio devices
  * @parent_dev: the underlying transport device (e.g., MMIO device)
+ * @transport: dispatch table to the parent bus
+ * @transport_data: opaque closure representing the parent bus context
  * @ops: the backend-specific operations table
  * @priv: opaque pointer to the backend state (e.g., block device state)
  * @device_id: standard Virtio subsystem identifier (e.g., 2 for Block)
  * @vqs: array of managed virtqueues
  * @nr_vqs: number of active virtqueues
- * @set_irq: ?
  */
 struct virtio_device {
 	struct modvm_device *parent_dev;
+
+	const struct virtio_transport_ops *transport;
+	void *transport_data;
+	struct modvm_mem_space *mem;
+
 	const struct virtio_device_ops *ops;
 	void *priv;
 	uint32_t device_id;
 
 	struct virtqueue *vqs[VIRTIO_MAX_VQS];
 	uint16_t nr_vqs;
-
-	void (*set_irq)(struct virtio_device *vdev);
 };
 
 /**
@@ -66,13 +78,13 @@ struct virtio_device {
  * @base: the starting address on the MMIO bus
  * @irq: the pre-wired interrupt line to signal the processor
  * @vdev: the specific virtio backend payload to wrap
+ * @mem_space: ?
  */
 struct virtio_mmio_pdata {
 	uint64_t base;
 	struct modvm_irq *irq;
 	struct virtio_device *vdev;
+	struct modvm_mem_space *mem_space;
 };
-
-void virtio_mmio_set_irq(struct virtio_device *vdev);
 
 #endif /* MODVM_HW_VIRTIO_VIRTIO_H */

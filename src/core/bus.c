@@ -12,7 +12,7 @@
 #undef pr_fmt
 #define pr_fmt(fmt) "bus: " fmt
 
-static void bus_region_release(struct modvm_bus_region *reg)
+static void modvm_bus_region_release(struct modvm_bus_region *reg)
 {
 	list_del(&reg->node);
 	pr_debug("automatically unregistered bus region at 0x%lx\n", reg->base);
@@ -65,7 +65,7 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 
 	list_add_tail(&reg->node, list);
 
-	ret = modvm_devm_add_action(dev, bus_region_release, reg);
+	ret = modvm_devm_add_action(dev, modvm_bus_region_release, reg);
 	if (ret < 0) {
 		list_del(&reg->node);
 		return ret;

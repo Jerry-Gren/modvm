@@ -7,7 +7,7 @@
 #include <modvm/core/vcpu.h>
 #include <modvm/core/bus.h>
 #include <modvm/core/modvm.h>
-#include <modvm/arch/x86/regs.h>
+#include <modvm/internal/arch/x86/regs.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 
@@ -19,7 +19,7 @@
 #define MAX_KVM_CPUID_ENTRIES 1024
 
 /**
- * kvm_setup_cpuid - dynamically probe and inject host CPU features
+ * kvm_x86_cpuid_setup - dynamically probe and inject host CPU features
  * @state: the global KVM state containing the hypervisor file descriptor
  * @vcpu_fd: the file descriptor of the target virtual processor
  *
@@ -29,7 +29,7 @@
  *
  * Return: 0 on success, or a negative error code.
  */
-static int kvm_setup_cpuid(struct modvm_kvm_state *state, int vcpu_fd)
+static int kvm_x86_cpuid_setup(struct modvm_kvm_state *state, int vcpu_fd)
 {
 	struct kvm_cpuid2 *cpuid;
 	int nent = 100;
@@ -92,7 +92,7 @@ int modvm_kvm_arch_vcpu_init(struct modvm_vcpu *vcpu)
 	struct modvm_kvm_state *state = vcpu->accel->priv;
 	int ret;
 
-	ret = kvm_setup_cpuid(state, vcpu_state->vcpu_fd);
+	ret = kvm_x86_cpuid_setup(state, vcpu_state->vcpu_fd);
 	if (ret < 0)
 		return ret;
 
@@ -117,8 +117,8 @@ int modvm_kvm_arch_vcpu_init(struct modvm_vcpu *vcpu)
 	return 0;
 }
 
-static void segment_to_kvm(struct kvm_segment *dst,
-			   const struct modvm_x86_segment *src)
+static void kvm_x86_segment_pack(struct kvm_segment *dst,
+				 const struct modvm_x86_segment *src)
 {
 	dst->base = src->base;
 	dst->limit = src->limit;
@@ -133,8 +133,8 @@ static void segment_to_kvm(struct kvm_segment *dst,
 	dst->unusable = src->unusable;
 }
 
-static void kvm_to_segment(struct modvm_x86_segment *dst,
-			   const struct kvm_segment *src)
+static void kvm_x86_segment_unpack(struct modvm_x86_segment *dst,
+				   const struct kvm_segment *src)
 {
 	dst->base = src->base;
 	dst->limit = src->limit;
@@ -174,14 +174,14 @@ int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
 		if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &k_sregs) < 0)
 			return -errno;
 
-		kvm_to_segment(&m_sregs->cs, &k_sregs.cs);
-		kvm_to_segment(&m_sregs->ds, &k_sregs.ds);
-		kvm_to_segment(&m_sregs->es, &k_sregs.es);
-		kvm_to_segment(&m_sregs->fs, &k_sregs.fs);
-		kvm_to_segment(&m_sregs->gs, &k_sregs.gs);
-		kvm_to_segment(&m_sregs->ss, &k_sregs.ss);
-		kvm_to_segment(&m_sregs->tr, &k_sregs.tr);
-		kvm_to_segment(&m_sregs->ldt, &k_sregs.ldt);
+		kvm_x86_segment_unpack(&m_sregs->cs, &k_sregs.cs);
+		kvm_x86_segment_unpack(&m_sregs->ds, &k_sregs.ds);
+		kvm_x86_segment_unpack(&m_sregs->es, &k_sregs.es);
+		kvm_x86_segment_unpack(&m_sregs->fs, &k_sregs.fs);
+		kvm_x86_segment_unpack(&m_sregs->gs, &k_sregs.gs);
+		kvm_x86_segment_unpack(&m_sregs->ss, &k_sregs.ss);
+		kvm_x86_segment_unpack(&m_sregs->tr, &k_sregs.tr);
+		kvm_x86_segment_unpack(&m_sregs->ldt, &k_sregs.ldt);
 
 		m_sregs->cr0 = k_sregs.cr0;
 		m_sregs->cr2 = k_sregs.cr2;
@@ -253,14 +253,14 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 		if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &k_sregs) < 0)
 			return -errno;
 
-		segment_to_kvm(&k_sregs.cs, &m_sregs->cs);
-		segment_to_kvm(&k_sregs.ds, &m_sregs->ds);
-		segment_to_kvm(&k_sregs.es, &m_sregs->es);
-		segment_to_kvm(&k_sregs.fs, &m_sregs->fs);
-		segment_to_kvm(&k_sregs.gs, &m_sregs->gs);
-		segment_to_kvm(&k_sregs.ss, &m_sregs->ss);
-		segment_to_kvm(&k_sregs.tr, &m_sregs->tr);
-		segment_to_kvm(&k_sregs.ldt, &m_sregs->ldt);
+		kvm_x86_segment_pack(&k_sregs.cs, &m_sregs->cs);
+		kvm_x86_segment_pack(&k_sregs.ds, &m_sregs->ds);
+		kvm_x86_segment_pack(&k_sregs.es, &m_sregs->es);
+		kvm_x86_segment_pack(&k_sregs.fs, &m_sregs->fs);
+		kvm_x86_segment_pack(&k_sregs.gs, &m_sregs->gs);
+		kvm_x86_segment_pack(&k_sregs.ss, &m_sregs->ss);
+		kvm_x86_segment_pack(&k_sregs.tr, &m_sregs->tr);
+		kvm_x86_segment_pack(&k_sregs.ldt, &m_sregs->ldt);
 
 		k_sregs.cr0 = m_sregs->cr0;
 		k_sregs.cr2 = m_sregs->cr2;

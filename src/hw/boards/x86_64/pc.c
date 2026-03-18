@@ -8,17 +8,14 @@
 #include <modvm/core/modvm.h>
 #include <modvm/core/device.h>
 #include <modvm/core/devm.h>
-#include <modvm/core/ctxm.h>
 #include <modvm/core/loader.h>
 #include <modvm/core/pci.h>
-#include <modvm/hw/serial.h>
+#include <modvm/hw/char/serial.h>
 #include <modvm/core/irq.h>
-#include <modvm/backends/block/posix.h>
 #include <modvm/hw/pci-host/pio_bridge.h>
 #include <modvm/hw/virtio/virtio.h>
 #include <modvm/hw/virtio/virtio_pci.h>
 #include <modvm/hw/virtio/virtio_blk.h>
-#include <modvm/utils/cmdline.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
@@ -40,13 +37,13 @@ struct pc_irq_route {
 	uint32_t gsi;
 };
 
-static void pc_irq_handler(void *data, int level)
+static void modvm_hw_pc_irq_handler(void *data, int level)
 {
 	struct pc_irq_route *route = data;
 	modvm_accel_set_irq(route->accel, route->gsi, level);
 }
 
-static void pc_board_route_pci_irqs(struct modvm_pci_bus *bus)
+static void modvm_hw_pc_route_pci_irqs(struct modvm_pci_bus *bus)
 {
 	struct modvm_pci_device *pos;
 
@@ -74,35 +71,14 @@ static void pc_board_route_pci_irqs(struct modvm_pci_bus *bus)
 	}
 }
 
-static int pc_board_add_virtio_blk(struct modvm_ctx *ctx,
-				   struct modvm_pci_bus *pci_bus)
+static int modvm_hw_pc_add_virtio_blk(struct modvm_ctx *ctx,
+				      struct modvm_pci_bus *pci_bus,
+				      struct modvm_block *blk_backend)
 {
-	char *drive_path;
-	struct modvm_block *blk_backend;
 	struct virtio_device *vdev_blk;
 	struct modvm_device *vpci_dev;
 	struct virtio_pci_pdata vpci_pdata;
 	int ret;
-
-	if (!ctx->config.board_opts)
-		return 0;
-
-	drive_path = cmdline_extract_opt(ctx->config.board_opts, "drive");
-	if (!drive_path)
-		return 0;
-
-	blk_backend = modvm_block_posix_create(drive_path, false);
-	free(drive_path);
-
-	if (!blk_backend)
-		return -EIO;
-
-	ret = modvm_ctxm_add_action(ctx, modvm_block_posix_destroy,
-				    blk_backend);
-	if (ret < 0) {
-		modvm_block_posix_destroy(blk_backend);
-		return ret;
-	}
 
 	vdev_blk = virtio_blk_create(ctx, blk_backend);
 	if (!vdev_blk)
@@ -117,6 +93,7 @@ static int pc_board_add_virtio_blk(struct modvm_ctx *ctx,
 	vpci_pdata.devfn = PCI_AUTO_DEVFN;
 	vpci_pdata.bar0_base = PCI_AUTO_MMIO;
 	vpci_pdata.interrupt_pin = 1;
+	vpci_pdata.mem_space = &ctx->accel.mem_space;
 
 	ret = modvm_device_add(vpci_dev, &vpci_pdata);
 	if (ret < 0) {
@@ -128,7 +105,7 @@ static int pc_board_add_virtio_blk(struct modvm_ctx *ctx,
 }
 
 /**
- * pc_board_init - assemble the legacy x86 personal computer topology
+ * modvm_hw_pc_init - assemble the legacy x86 personal computer topology
  * @ctx: the context instance being constructed
  *
  * Handles intelligent memory splitting around the PCI hole and wires up
@@ -136,7 +113,7 @@ static int pc_board_add_virtio_blk(struct modvm_ctx *ctx,
  *
  * Return: 0 upon successful assembly, or a negative error code.
  */
-static int pc_board_init(struct modvm_ctx *ctx)
+static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 {
 	struct modvm_device *uart, *exit_dev, *pci_bridge;
 	struct modvm_serial_pdata uart_pdata;
@@ -146,7 +123,9 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	uint64_t ram_size = ctx->config.ram_size;
 	uint64_t low_ram;
 	uint64_t high_ram = 0;
-	int ret, i;
+	int ret;
+	int i;
+	size_t d_idx;
 
 	if (ram_size >= PC_LOW_RAM_MAX) {
 		low_ram = PC_LOW_RAM_MAX;
@@ -171,7 +150,6 @@ static int pc_board_init(struct modvm_ctx *ctx)
 	if (ret < 0)
 		return ret;
 
-	/* UART Device */
 	uart = modvm_device_alloc(ctx, "uart-16550a");
 	if (!uart)
 		return -ENOMEM;
@@ -186,7 +164,9 @@ static int pc_board_init(struct modvm_ctx *ctx)
 
 	uart_pdata.base = 0x3f8;
 	uart_pdata.console = ctx->config.console;
-	uart_pdata.irq = modvm_devm_irq_alloc(uart, pc_irq_handler, route);
+	uart_pdata.event_loop = &ctx->event_loop;
+	uart_pdata.irq =
+		modvm_devm_irq_alloc(uart, modvm_hw_pc_irq_handler, route);
 	if (!uart_pdata.irq) {
 		modvm_device_put(uart);
 		return -ENOMEM;
@@ -197,9 +177,7 @@ static int pc_board_init(struct modvm_ctx *ctx)
 		modvm_device_put(uart);
 		return ret;
 	}
-	/* From here on, UART is managed by ctx->devices */
 
-	/* PCI Host Bridge Device */
 	pci_bridge = modvm_device_alloc(ctx, "pci-pio-bridge");
 	if (!pci_bridge)
 		return -ENOMEM;
@@ -217,8 +195,8 @@ static int pc_board_init(struct modvm_ctx *ctx)
 		}
 		route->accel = &ctx->accel;
 		route->gsi = 10 + i;
-		bridge_pdata.pirq[i] =
-			modvm_devm_irq_alloc(pci_bridge, pc_irq_handler, route);
+		bridge_pdata.pirq[i] = modvm_devm_irq_alloc(
+			pci_bridge, modvm_hw_pc_irq_handler, route);
 		if (!bridge_pdata.pirq[i]) {
 			modvm_device_put(pci_bridge);
 			return -ENOMEM;
@@ -230,18 +208,20 @@ static int pc_board_init(struct modvm_ctx *ctx)
 		modvm_device_put(pci_bridge);
 		return ret;
 	}
-	/* From here on, PCI Bridge is managed by ctx->devices */
 
-	/* Virtio Block Device (Optional) */
-	ret = pc_board_add_virtio_blk(ctx, pci_root_bus);
-	if (ret < 0)
-		return ret;
+	for (d_idx = 0; d_idx < ctx->config.nr_drives; d_idx++) {
+		ret = modvm_hw_pc_add_virtio_blk(ctx, pci_root_bus,
+						 ctx->config.drives[d_idx]);
+		if (ret < 0) {
+			pr_err("failed to mount virtio block device %zu\n",
+			       d_idx);
+			return ret;
+		}
+	}
 
-	/* Execute firmware PCI enumeration and IRQ routing */
 	if (pci_root_bus)
-		pc_board_route_pci_irqs(pci_root_bus);
+		modvm_hw_pc_route_pci_irqs(pci_root_bus);
 
-	/* Debug Exit Device */
 	exit_dev = modvm_device_alloc(ctx, "debug-exit");
 	if (!exit_dev)
 		return -ENOMEM;
@@ -256,12 +236,12 @@ static int pc_board_init(struct modvm_ctx *ctx)
 }
 
 /**
- * pc_board_reset - orchestrate the boot sequence for the PC architecture
+ * modvm_hw_pc_reset - orchestrate the boot sequence for the PC architecture
  * @ctx: the context instance to reset
  * 
  * Return: 0 on success, or a negative error code.
  */
-static int pc_board_reset(struct modvm_ctx *ctx)
+static int modvm_hw_pc_reset(struct modvm_ctx *ctx)
 {
 	int ret;
 
@@ -281,8 +261,8 @@ static int pc_board_reset(struct modvm_ctx *ctx)
 }
 
 static const struct modvm_board_ops pc_ops = {
-	.init = pc_board_init,
-	.reset = pc_board_reset,
+	.init = modvm_hw_pc_init,
+	.reset = modvm_hw_pc_reset,
 };
 
 static const struct modvm_board pc_board = {
@@ -291,7 +271,7 @@ static const struct modvm_board pc_board = {
 	.ops = &pc_ops,
 };
 
-static void __attribute__((constructor)) register_pc_board(void)
+static void __attribute__((constructor)) modvm_hw_pc_register(void)
 {
 	modvm_board_register(&pc_board);
 }

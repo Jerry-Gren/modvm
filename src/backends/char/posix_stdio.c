@@ -13,6 +13,7 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/container_of.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "posix_stdio: " fmt
@@ -20,20 +21,19 @@
 #define STDIO_TX_BUF_SIZE 256
 #define ESCAPE_CHAR 0x01 /* Ctrl+a */
 
-struct stdio_ctx {
+struct modvm_chardev_posix_ctx {
 	struct termios orig_termios;
 	bool is_saved;
 	uint8_t tx_buf[STDIO_TX_BUF_SIZE];
 	size_t tx_len;
-
 	bool escape_pending;
-	struct modvm_ctx *ctx;
+	struct modvm_event_loop *loop;
 };
 
-static int stdio_write(struct modvm_chardev *dev, const uint8_t *buf,
-		       size_t len)
+static int modvm_chardev_posix_write(struct modvm_chardev *dev,
+				     const uint8_t *buf, size_t len)
 {
-	struct stdio_ctx *ctx = dev->priv;
+	struct modvm_chardev_posix_ctx *ctx = dev->priv;
 	size_t i;
 
 	for (i = 0; i < len; i++) {
@@ -65,15 +65,15 @@ static int stdio_write(struct modvm_chardev *dev, const uint8_t *buf,
 }
 
 /**
- * stdio_rx_cb - invoked by the global event loop when STDIN data arrives
+ * modvm_chardev_posix_rx_cb - invoked by the global event loop when STDIN data arrives
  * @fd: the STDIN descriptor
  * @events: bitmask of triggered poll events
  * @data: opaque closure pointing to the character device instance
  */
-static void stdio_rx_cb(int fd, uint32_t events, void *data)
+static void modvm_chardev_posix_rx_cb(int fd, uint32_t events, void *data)
 {
 	struct modvm_chardev *dev = data;
-	struct stdio_ctx *ctx = dev->priv;
+	struct modvm_chardev_posix_ctx *ctx = dev->priv;
 	uint8_t rx_buf[64];
 	uint8_t filtered_buf[64];
 	size_t filtered_len = 0;
@@ -85,9 +85,8 @@ static void stdio_rx_cb(int fd, uint32_t events, void *data)
 
 	ret = read(fd, rx_buf, sizeof(rx_buf));
 	if (unlikely(ret <= 0)) {
-		/* catch eof */
 		if (ret == 0)
-			modvm_event_loop_rm_fd(ctx->ctx, fd);
+			modvm_event_loop_rm_fd(ctx->loop, fd);
 		return;
 	}
 
@@ -97,10 +96,12 @@ static void stdio_rx_cb(int fd, uint32_t events, void *data)
 
 			if (rx_buf[i] == 'x' || rx_buf[i] == 'X') {
 				pr_info("caught Ctrl+a x, requesting shutdown...\n");
-				modvm_request_shutdown(ctx->ctx);
+				struct modvm_ctx *mctx = container_of(
+					ctx->loop, struct modvm_ctx,
+					event_loop);
+				modvm_request_shutdown(mctx);
 				return;
 			} else if (rx_buf[i] == ESCAPE_CHAR) {
-				/* Double escape sends a literal Ctrl+a to the guest */
 				filtered_buf[filtered_len++] = ESCAPE_CHAR;
 			} else {
 				pr_info("Ctrl+a %c is not supported (only 'x' to exit)\n",
@@ -119,60 +120,87 @@ static void stdio_rx_cb(int fd, uint32_t events, void *data)
 		dev->rx_cb(dev->rx_data, filtered_buf, filtered_len);
 }
 
-static void stdio_set_rx_cb(struct modvm_chardev *dev, struct modvm_ctx *ctx,
-			    modvm_chardev_rx_cb_t cb, void *data)
+static void modvm_chardev_posix_set_rx_cb(struct modvm_chardev *dev,
+					  struct modvm_event_loop *loop,
+					  modvm_chardev_rx_cb_t cb, void *data)
 {
-	struct stdio_ctx *sctx = dev->priv;
-	sctx->ctx = ctx;
+	struct modvm_chardev_posix_ctx *sctx = dev->priv;
+	sctx->loop = loop;
 
 	(void)data;
 
 	if (cb) {
-		modvm_event_loop_add_fd(ctx, STDIN_FILENO, MODVM_EVENT_READ,
-					stdio_rx_cb, dev);
+		modvm_event_loop_add_fd(loop, STDIN_FILENO, MODVM_EVENT_READ,
+					modvm_chardev_posix_rx_cb, dev);
 	} else {
-		modvm_event_loop_rm_fd(ctx, STDIN_FILENO);
+		modvm_event_loop_rm_fd(loop, STDIN_FILENO);
 	}
 }
 
-static void stdio_pause_rx(struct modvm_chardev *dev)
+static void modvm_chardev_posix_pause_rx(struct modvm_chardev *dev)
 {
-	struct stdio_ctx *ctx = dev->priv;
+	struct modvm_chardev_posix_ctx *ctx = dev->priv;
 
-	if (likely(ctx->ctx))
-		modvm_event_loop_rm_fd(ctx->ctx, STDIN_FILENO);
+	if (likely(ctx->loop))
+		modvm_event_loop_rm_fd(ctx->loop, STDIN_FILENO);
 }
 
-static void stdio_resume_rx(struct modvm_chardev *dev)
+static void modvm_chardev_posix_resume_rx(struct modvm_chardev *dev)
 {
-	struct stdio_ctx *ctx = dev->priv;
+	struct modvm_chardev_posix_ctx *ctx = dev->priv;
 
-	if (likely(ctx->ctx && dev->rx_cb))
-		modvm_event_loop_add_fd(ctx->ctx, STDIN_FILENO,
-					MODVM_EVENT_READ, stdio_rx_cb, dev);
+	if (likely(ctx->loop && dev->rx_cb))
+		modvm_event_loop_add_fd(ctx->loop, STDIN_FILENO,
+					MODVM_EVENT_READ,
+					modvm_chardev_posix_rx_cb, dev);
 }
 
-static const struct modvm_chardev_ops stdio_ops = {
-	.write = stdio_write,
-	.set_rx_cb = stdio_set_rx_cb,
-	.pause_rx = stdio_pause_rx,
-	.resume_rx = stdio_resume_rx,
+static void modvm_chardev_posix_release(struct modvm_chardev *dev)
+{
+	struct modvm_chardev_posix_ctx *ctx;
+
+	if (WARN_ON(!dev))
+		return;
+
+	ctx = dev->priv;
+
+	if (ctx->tx_len > 0) {
+		if (write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len) < 0) {
+			/* Best effort flush during teardown */
+		}
+	}
+
+	if (ctx->is_saved)
+		tcsetattr(STDIN_FILENO, TCSANOW, &ctx->orig_termios);
+
+	free(ctx);
+	free(dev);
+}
+
+static const struct modvm_chardev_ops modvm_chardev_posix_ops = {
+	.write = modvm_chardev_posix_write,
+	.set_rx_cb = modvm_chardev_posix_set_rx_cb,
+	.pause_rx = modvm_chardev_posix_pause_rx,
+	.resume_rx = modvm_chardev_posix_resume_rx,
+	.release = modvm_chardev_posix_release,
 };
 
 /**
- * modvm_chardev_stdio_create - hijack host terminal for console input/output
+ * modvm_chardev_posix_create - hijack host terminal for console input/output
  *
  * Disables canonical text processing on the host terminal to allow the
  * guest operating system full control over character interpretation.
  *
  * Return: an allocated character device object, or NULL on failure.
  */
-struct modvm_chardev *modvm_chardev_stdio_create(void)
+static struct modvm_chardev *modvm_chardev_posix_create(const char *opts)
 {
 	struct modvm_chardev *dev;
-	struct stdio_ctx *ctx;
+	struct modvm_chardev_posix_ctx *ctx;
 	struct termios raw;
 	int flags;
+
+	(void)opts;
 
 	dev = calloc(1, sizeof(*dev));
 	ctx = calloc(1, sizeof(*ctx));
@@ -182,8 +210,8 @@ struct modvm_chardev *modvm_chardev_stdio_create(void)
 		return NULL;
 	}
 
-	dev->name = "stdio";
-	dev->ops = &stdio_ops;
+	dev->name = "posix-stdio";
+	dev->ops = &modvm_chardev_posix_ops;
 	dev->priv = ctx;
 
 	flags = fcntl(STDOUT_FILENO, F_GETFL, 0);
@@ -204,31 +232,12 @@ struct modvm_chardev *modvm_chardev_stdio_create(void)
 	return dev;
 }
 
-/**
- * modvm_chardev_stdio_destroy - release terminal and restore standard settings
- * @dev: the character device to tear down
- */
-void modvm_chardev_stdio_destroy(struct modvm_chardev *dev)
+static const struct modvm_chardev_driver posix_stdio_driver = {
+	.name = "posix-stdio",
+	.create = modvm_chardev_posix_create,
+};
+
+static void __attribute__((constructor)) modvm_chardev_posix_register(void)
 {
-	struct stdio_ctx *ctx;
-
-	if (WARN_ON(!dev))
-		return;
-
-	ctx = dev->priv;
-
-	if (ctx->tx_len > 0) {
-		if (write(STDOUT_FILENO, ctx->tx_buf, ctx->tx_len) < 0) {
-			/*
-			 * Best effort flush during teardown. 
-			 * Safely ignore errors if the host pipe is already broken or closed.
-			 */
-		}
-	}
-
-	if (ctx->is_saved)
-		tcsetattr(STDIN_FILENO, TCSANOW, &ctx->orig_termios);
-
-	free(ctx);
-	free(dev);
+	modvm_chardev_driver_register(&posix_stdio_driver);
 }

@@ -14,6 +14,9 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 
+#include "virtqueue.h"
+#include "virtio_pci_reg.h"
+
 #undef pr_fmt
 #define pr_fmt(fmt) "virtio_pci: " fmt
 
@@ -44,19 +47,17 @@ struct virtio_pci_ctx {
 	bool queue_ready[VIRTIO_MAX_VQS];
 };
 
-void virtio_pci_set_irq(struct virtio_device *vdev)
+static void virtio_pci_transport_set_irq_cb(void *transport_data)
 {
-	struct virtio_pci_ctx *ctx;
+	struct virtio_pci_ctx *ctx = transport_data;
 
-	if (unlikely(!vdev || !vdev->parent_dev))
-		return;
-
-	ctx = vdev->parent_dev->priv;
-	ctx->isr_status |= 1; /* Queue interrupt */
-
-	/* Delegate interrupt signaling to the abstract PCI core */
+	ctx->isr_status |= 1;
 	modvm_pci_device_set_irq(&ctx->pci_dev, 1);
 }
+
+static const struct virtio_transport_ops virtio_pci_transport = {
+	.set_irq_cb = virtio_pci_transport_set_irq_cb,
+};
 
 static uint32_t virtio_pci_read_config(struct modvm_pci_device *pci_dev,
 				       uint8_t offset, uint8_t size)
@@ -176,7 +177,7 @@ static uint64_t virtio_pci_bar0_read(struct modvm_device *dev, uint64_t offset,
 	}
 
 	if (offset >= 0x300) { /* Device Config Region */
-		if (likely(vdev->ops->read_config))
+		if (vdev->ops->read_config)
 			return vdev->ops->read_config(vdev, offset - 0x300,
 						      size);
 	}
@@ -283,7 +284,7 @@ static void virtio_pci_bar0_write(struct modvm_device *dev, uint64_t offset,
 	}
 
 	if (offset >= 0x300) { /* Device Config Region */
-		if (likely(vdev->ops->write_config))
+		if (vdev->ops->write_config)
 			vdev->ops->write_config(vdev, offset - 0x300,
 						(uint32_t)val, size);
 	}
@@ -299,7 +300,7 @@ static const struct modvm_pci_device_ops virtio_pci_config_ops = {
 	.write_config = virtio_pci_write_config,
 };
 
-static void virtio_vqs_cleanup(struct virtio_device *vdev)
+static void virtio_pci_vdev_release(struct virtio_device *vdev)
 {
 	int i;
 
@@ -307,6 +308,9 @@ static void virtio_vqs_cleanup(struct virtio_device *vdev)
 		if (vdev->vqs[i])
 			virtqueue_destroy(vdev->vqs[i]);
 	}
+
+	if (vdev->ops && vdev->ops->unrealize)
+		vdev->ops->unrealize(vdev);
 }
 
 /**
@@ -393,7 +397,10 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 
 	vdev = plat->vdev;
 	vdev->parent_dev = dev;
-	vdev->set_irq = virtio_pci_set_irq;
+
+	vdev->transport = &virtio_pci_transport;
+	vdev->transport_data = ctx;
+	vdev->mem = plat->mem_space;
 
 	ctx->vdev = vdev;
 	ctx->bar0_size = (uint32_t)os_page_size();
@@ -420,26 +427,31 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 	/* Backend lifecycle initialization */
 	if (vdev->ops->realize) {
 		ret = vdev->ops->realize(vdev);
-		if (ret < 0)
+		if (ret < 0) {
+			if (vdev->ops->unrealize)
+				vdev->ops->unrealize(vdev);
 			return ret;
+		}
 	}
 
-	ret = modvm_devm_add_action(dev, virtio_vqs_cleanup, vdev);
-	if (ret < 0)
+	ret = modvm_devm_add_action(dev, virtio_pci_vdev_release, vdev);
+	if (ret < 0) {
+		virtio_pci_vdev_release(vdev);
 		return ret;
+	}
 
 	/* MUST set this AFTER realize() assigns vdev->nr_vqs */
 	ctx->common_cfg.num_queues = cpu_to_le16(vdev->nr_vqs);
 
 	virtio_pci_build_config_space(ctx, plat->bar0_base);
 
-	/* 1. Register BAR0 on the generic MMIO bus */
+	/* Register BAR0 on the generic MMIO bus */
 	ret = modvm_bus_register_region(MODVM_BUS_MMIO, plat->bar0_base,
 					ctx->bar0_size, dev);
 	if (ret < 0)
 		return ret;
 
-	/* 2. Register configuration space on the abstract PCI bus */
+	/* Register configuration space on the abstract PCI bus */
 	ret = modvm_pci_device_register(plat->pci_bus, &ctx->pci_dev);
 	if (ret < 0)
 		return ret;

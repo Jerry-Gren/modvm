@@ -8,11 +8,13 @@
 #include <modvm/core/accel.h>
 #include <modvm/core/vcpu.h>
 #include <modvm/os/thread.h>
-#include <modvm/core/chardev.h>
 #include <modvm/utils/list.h>
 
 struct modvm_board;
 struct modvm_ctx;
+struct modvm_chardev;
+struct modvm_block;
+struct modvm_net;
 
 /**
  * struct modvm_bus - encapsulates the system's address space topologies
@@ -38,11 +40,14 @@ struct modvm_event_loop {
  * @ram_base: starting physical address of system memory
  * @ram_size: total capacity of system memory in bytes
  * @nr_vcpus: number of virtual processors to allocate
- * @loader_name: boot protocol plugin identifier (e.g., "linux-x86", "raw-x86")
- * @loader_opts: protocol-specific configuration string (e.g., "kernel=/boot/vmlinuz")
- * @board_opts: board-specific configuration string (e.g., "drive=/img.raw")
+ * @loader_name: boot protocol plugin identifier
+ * @loader_opts: protocol-specific configuration string
  * @board: selected motherboard topology blueprint
  * @console: character device backend for the primary system console
+ * @drives: array of abstracted host storage backends
+ * @nr_drives: number of active storage drives
+ * @nets: array of abstracted host network backends
+ * @nr_nets: number of active network interfaces
  */
 struct modvm_config {
 	const char *accel_name;
@@ -51,9 +56,12 @@ struct modvm_config {
 	unsigned int nr_vcpus;
 	const char *loader_name;
 	const char *loader_opts;
-	const char *board_opts;
 	const struct modvm_board *board;
 	struct modvm_chardev *console;
+	struct modvm_block **drives;
+	size_t nr_drives;
+	struct modvm_net **nets;
+	size_t nr_nets;
 };
 
 /**

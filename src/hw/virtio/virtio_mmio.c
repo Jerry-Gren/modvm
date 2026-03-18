@@ -6,10 +6,12 @@
 #include <modvm/core/bus.h>
 #include <modvm/core/devm.h>
 #include <modvm/hw/virtio/virtio.h>
-#include <modvm/hw/virtio/virtio_mmio.h>
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+
+#include "virtqueue.h"
+#include "virtio_mmio_reg.h"
 
 #undef pr_fmt
 #define pr_fmt(fmt) "virtio_mmio: " fmt
@@ -42,21 +44,17 @@ struct virtio_mmio_ctx {
 	bool queue_ready[VIRTIO_MAX_VQS];
 };
 
-/**
- * virtio_mmio_set_irq - assert the interrupt line for the guest driver
- * @vdev: the backend virtio device triggering the interrupt
- */
-void virtio_mmio_set_irq(struct virtio_device *vdev)
+static void virtio_mmio_transport_set_irq_cb(void *transport_data)
 {
-	struct virtio_mmio_ctx *ctx;
+	struct virtio_mmio_ctx *ctx = transport_data;
 
-	if (unlikely(!vdev || !vdev->parent_dev))
-		return;
-
-	ctx = vdev->parent_dev->priv;
 	ctx->interrupt_status |= VIRTIO_MMIO_INT_VRING;
 	modvm_irq_set_level(ctx->irq, 1);
 }
+
+static const struct virtio_transport_ops virtio_mmio_transport = {
+	.set_irq_cb = virtio_mmio_transport_set_irq_cb,
+};
 
 static uint64_t virtio_mmio_read(struct modvm_device *dev, uint64_t offset,
 				 uint8_t size)
@@ -216,7 +214,7 @@ static const struct modvm_device_ops virtio_mmio_ops = {
 	.write = virtio_mmio_write,
 };
 
-static void virtio_vqs_cleanup(struct virtio_device *vdev)
+static void virtio_mmio_vdev_release(struct virtio_device *vdev)
 {
 	int i;
 
@@ -224,6 +222,9 @@ static void virtio_vqs_cleanup(struct virtio_device *vdev)
 		if (vdev->vqs[i])
 			virtqueue_destroy(vdev->vqs[i]);
 	}
+
+	if (vdev->ops && vdev->ops->unrealize)
+		vdev->ops->unrealize(vdev);
 }
 
 static int virtio_mmio_instantiate(struct modvm_device *dev, void *pdata)
@@ -242,7 +243,11 @@ static int virtio_mmio_instantiate(struct modvm_device *dev, void *pdata)
 
 	vdev = plat->vdev;
 	vdev->parent_dev = dev;
-	vdev->set_irq = virtio_mmio_set_irq;
+
+	vdev->transport = &virtio_mmio_transport;
+	vdev->transport_data = ctx;
+	vdev->mem = plat->mem_space;
+
 	ctx->vdev = vdev;
 	ctx->irq = plat->irq;
 
@@ -252,13 +257,18 @@ static int virtio_mmio_instantiate(struct modvm_device *dev, void *pdata)
 	/* Backend lifecycle initialization */
 	if (vdev->ops->realize) {
 		ret = vdev->ops->realize(vdev);
-		if (ret < 0)
+		if (ret < 0) {
+			if (vdev->ops->unrealize)
+				vdev->ops->unrealize(vdev);
 			return ret;
+		}
 	}
 
-	ret = modvm_devm_add_action(dev, virtio_vqs_cleanup, vdev);
-	if (ret < 0)
+	ret = modvm_devm_add_action(dev, virtio_mmio_vdev_release, vdev);
+	if (ret < 0) {
+		virtio_mmio_vdev_release(vdev);
 		return ret;
+	}
 
 	/* 0x200 bytes maps standard registers and 0x100 for config space */
 	ret = modvm_bus_register_region(MODVM_BUS_MMIO, plat->base, 0x200, dev);

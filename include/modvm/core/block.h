@@ -12,6 +12,7 @@ struct modvm_block;
  * @read: read data from the storage medium at a specific offset
  * @write: write data to the storage medium at a specific offset
  * @get_capacity: retrieve the total size of the storage medium in bytes
+ * @release: ?
  */
 struct modvm_block_ops {
 	ssize_t (*read)(struct modvm_block *blk, void *buf, size_t count,
@@ -19,6 +20,7 @@ struct modvm_block_ops {
 	ssize_t (*write)(struct modvm_block *blk, const void *buf, size_t count,
 			 uint64_t offset);
 	uint64_t (*get_capacity)(struct modvm_block *blk);
+	void (*release)(struct modvm_block *blk);
 };
 
 /**
@@ -32,5 +34,14 @@ struct modvm_block {
 	const struct modvm_block_ops *ops;
 	void *priv;
 };
+
+struct modvm_block_driver {
+	const char *name;
+	struct modvm_block *(*create)(const char *opts);
+};
+
+void modvm_block_driver_register(const struct modvm_block_driver *drv);
+struct modvm_block *modvm_block_create(const char *name, const char *opts);
+void modvm_block_release(struct modvm_block *blk);
 
 #endif /* MODVM_CORE_BLOCK_H */

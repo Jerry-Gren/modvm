@@ -34,7 +34,7 @@ struct posix_event_loop {
 	int wakeup_pipe[2];
 };
 
-static void wakeup_pipe_handler(int fd, uint32_t revents, void *data)
+static void posix_event_loop_wakeup_cb(int fd, uint32_t revents, void *data)
 {
 	char buf[16];
 	ssize_t ret;
@@ -47,7 +47,7 @@ static void wakeup_pipe_handler(int fd, uint32_t revents, void *data)
 	} while (ret > 0);
 }
 
-static void posix_event_loop_close(struct posix_event_loop *loop)
+static void posix_event_loop_destroy(struct posix_event_loop *loop)
 {
 	if (loop->wakeup_pipe[0] != -1)
 		close(loop->wakeup_pipe[0]);
@@ -58,10 +58,10 @@ static void posix_event_loop_close(struct posix_event_loop *loop)
 }
 
 /**
- * event_loop_kick - interrupt the blocking poll() system call
+ * posix_event_loop_kick - interrupt the blocking poll() system call
  * @loop: the event loop structure
  */
-static void event_loop_kick(struct posix_event_loop *loop)
+static void posix_event_loop_kick(struct posix_event_loop *loop)
 {
 	if (likely(loop->wakeup_pipe[1] != -1)) {
 		if (write(loop->wakeup_pipe[1], "k", 1) < 0) {
@@ -71,7 +71,7 @@ static void event_loop_kick(struct posix_event_loop *loop)
 }
 
 /**
- * event_loop_compact - eliminate tombstones and compress event arrays
+ * posix_event_loop_compact - eliminate tombstones and compress event arrays
  * @loop: the posix event loop structure
  *
  * Performs a garbage collection pass over the polling arrays. It shifts
@@ -79,7 +79,7 @@ static void event_loop_kick(struct posix_event_loop *loop)
  * This guarantees a dense array is passed to the kernel, optimizing the
  * poll() system call and preventing descriptor exhaustion.
  */
-static void event_loop_compact(struct posix_event_loop *loop)
+static void posix_event_loop_compact(struct posix_event_loop *loop)
 {
 	int i;
 	int valid_count = 0;
@@ -134,7 +134,7 @@ int modvm_event_loop_init(struct modvm_ctx *ctx)
 		return -errno;
 	}
 
-	modvm_ctxm_add_action(ctx, posix_event_loop_close, loop);
+	modvm_ctxm_add_action(ctx, posix_event_loop_destroy, loop);
 
 	flags = fcntl(loop->wakeup_pipe[0], F_GETFL, 0);
 	fcntl(loop->wakeup_pipe[0], F_SETFL, flags | O_NONBLOCK);
@@ -144,14 +144,14 @@ int modvm_event_loop_init(struct modvm_ctx *ctx)
 
 	ctx->event_loop.priv = loop;
 
-	return modvm_event_loop_add_fd(ctx, loop->wakeup_pipe[0],
-				       MODVM_EVENT_READ, wakeup_pipe_handler,
-				       loop);
+	return modvm_event_loop_add_fd(&ctx->event_loop, loop->wakeup_pipe[0],
+				       MODVM_EVENT_READ,
+				       posix_event_loop_wakeup_cb, loop);
 }
 
 /**
  * modvm_event_loop_add_fd - register a host descriptor for asynchronous monitoring
- * @ctx: the machine context
+ * @loop_handle: ?
  * @fd: the POSIX file descriptor
  * @events_mask: bitmask of events to wait for
  * @cb: the function to execute
@@ -159,18 +159,19 @@ int modvm_event_loop_init(struct modvm_ctx *ctx)
  *
  * Return: 0 on success, or a negative error code.
  */
-int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
-			    modvm_event_cb_t cb, void *data)
+int modvm_event_loop_add_fd(struct modvm_event_loop *loop_handle, int fd,
+			    uint32_t events_mask, modvm_event_cb_t cb,
+			    void *data)
 {
 	struct posix_event_loop *loop;
 	short poll_ev = 0;
 	int slot = -1;
 	int i;
 
-	if (WARN_ON(!ctx || !ctx->event_loop.priv))
+	if (WARN_ON(!loop_handle || !loop_handle->priv))
 		return -EINVAL;
 
-	loop = ctx->event_loop.priv;
+	loop = loop_handle->priv;
 
 	if (events_mask & MODVM_EVENT_READ)
 		poll_ev |= POLLIN;
@@ -206,7 +207,7 @@ int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
 
 	os_mutex_unlock(loop->lock);
 
-	event_loop_kick(loop);
+	posix_event_loop_kick(loop);
 
 	pr_debug("monitoring descriptor %d at slot %d\n", fd, slot);
 
@@ -215,22 +216,22 @@ int modvm_event_loop_add_fd(struct modvm_ctx *ctx, int fd, uint32_t events_mask,
 
 /**
  * modvm_event_loop_rm_fd - stop monitoring a host descriptor
- * @ctx: the machine context
+ * @loop_handle: ?
  * @fd: the descriptor to remove
  *
  * Utilizes a tombstone (soft-delete) mechanism by setting the descriptor
  * to -1. This explicitly prevents array shifting during active event
  * dispatching, solving the iterator collapse vulnerability.
  */
-void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
+void modvm_event_loop_rm_fd(struct modvm_event_loop *loop_handle, int fd)
 {
 	struct posix_event_loop *loop;
 	int i;
 
-	if (WARN_ON(!ctx || !ctx->event_loop.priv))
+	if (WARN_ON(!loop_handle || !loop_handle->priv))
 		return;
 
-	loop = ctx->event_loop.priv;
+	loop = loop_handle->priv;
 
 	os_mutex_lock(loop->lock);
 	for (i = 0; i < loop->nr_events; i++) {
@@ -249,7 +250,7 @@ void modvm_event_loop_rm_fd(struct modvm_ctx *ctx, int fd)
 
 			os_mutex_unlock(loop->lock);
 
-			event_loop_kick(loop);
+			posix_event_loop_kick(loop);
 
 			pr_debug("relinquished monitoring of descriptor %d\n",
 				 fd);
@@ -282,7 +283,7 @@ int modvm_event_loop_run(struct modvm_ctx *ctx)
 	while (loop->is_running) {
 		os_mutex_lock(loop->lock);
 		/* Compress the array outside the dispatching phase */
-		event_loop_compact(loop);
+		posix_event_loop_compact(loop);
 
 		local_nr_events = loop->nr_events;
 		for (i = 0; i < local_nr_events; i++)
@@ -346,5 +347,5 @@ void modvm_event_loop_stop(struct modvm_ctx *ctx)
 	loop = ctx->event_loop.priv;
 	loop->is_running = false;
 
-	event_loop_kick(loop);
+	posix_event_loop_kick(loop);
 }

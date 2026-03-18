@@ -24,7 +24,7 @@ struct os_mutex {
 
 static int wakeup_signum = -1;
 
-static void empty_sig_handler(int signum)
+static void posix_thread_empty_sig_cb(int signum)
 {
 	(void)signum;
 }
@@ -41,7 +41,7 @@ void os_thread_system_init(void)
 	if (wakeup_signum != -1)
 		return;
 
-	sa.sa_handler = empty_sig_handler;
+	sa.sa_handler = posix_thread_empty_sig_cb;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = 0;
 

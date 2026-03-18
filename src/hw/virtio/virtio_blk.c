@@ -3,14 +3,17 @@
 #include <string.h>
 #include <errno.h>
 
-#include <modvm/core/ctxm.h>
 #include <modvm/core/block.h>
+#include <modvm/core/modvm.h>
 #include <modvm/hw/virtio/virtio.h>
 #include <modvm/hw/virtio/virtio_blk.h>
 #include <modvm/utils/byteorder.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
+
+#include "virtqueue.h"
+#include "virtio_blk_reg.h"
 
 #undef pr_fmt
 #define pr_fmt(fmt) "virtio_blk: " fmt
@@ -71,6 +74,22 @@ static int virtio_blk_realize(struct virtio_device *vdev)
 		ctx->config.capacity);
 
 	return 0;
+}
+
+/**
+ * virtio_blk_unrealize - cleanly teardown local allocations
+ * @vdev: the base virtio device pointer
+ *
+ * Provides the lifecycle counterpart to standard allocation.
+ */
+static void virtio_blk_unrealize(struct virtio_device *vdev)
+{
+	struct virtio_blk_ctx *ctx = vdev->priv;
+
+	if (WARN_ON(!ctx))
+		return;
+
+	free(ctx);
 }
 
 static uint64_t virtio_blk_get_features(struct virtio_device *vdev)
@@ -211,12 +230,13 @@ push_desc:
 		need_irq = true;
 	}
 
-	if (likely(need_irq))
-		vdev->set_irq(vdev);
+	if (likely(need_irq && vdev->transport && vdev->transport->set_irq_cb))
+		vdev->transport->set_irq_cb(vdev->transport_data);
 }
 
 static const struct virtio_device_ops virtio_blk_ops = {
 	.realize = virtio_blk_realize,
+	.unrealize = virtio_blk_unrealize,
 	.get_features = virtio_blk_get_features,
 	.read_config = virtio_blk_read_config,
 	.notify_queue = virtio_blk_notify_queue,
@@ -238,7 +258,7 @@ struct virtio_device *virtio_blk_create(struct modvm_ctx *ctx,
 	if (WARN_ON(!ctx || !backend))
 		return NULL;
 
-	blk_ctx = modvm_ctxm_zalloc(ctx, sizeof(*blk_ctx));
+	blk_ctx = calloc(1, sizeof(*blk_ctx));
 	if (!blk_ctx)
 		return NULL;
 

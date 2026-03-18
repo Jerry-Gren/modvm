@@ -15,9 +15,9 @@
 #include <modvm/utils/bug.h>
 #include <modvm/core/chardev.h>
 #include <modvm/core/irq.h>
-#include <modvm/hw/serial.h>
-#include <modvm/backends/char/stdio.h>
-#include <modvm/arch/x86/regs.h>
+#include <modvm/hw/char/serial.h>
+#include <modvm/core/chardev.h>
+#include <modvm/internal/arch/x86/regs.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "test_board: " fmt
@@ -71,6 +71,7 @@ static int mock_board_init(struct modvm_ctx *ctx)
 
 	pdata.base = 0x3f8;
 	pdata.console = ctx->config.console;
+	pdata.event_loop = &ctx->event_loop;
 	pdata.irq = modvm_devm_irq_alloc(uart, mock_irq_handler, route);
 	if (!pdata.irq) {
 		ret = -ENOMEM;
@@ -161,7 +162,7 @@ static void test_machine_lifecycle(void)
 	struct modvm_chardev *console;
 	int ret;
 
-	console = modvm_chardev_stdio_create();
+	console = modvm_chardev_create("posix-stdio", NULL);
 	if (WARN_ON(!console))
 		modvm_panic("failed to create console backend\n");
 
@@ -190,7 +191,7 @@ static void test_machine_lifecycle(void)
 
 	pr_info("tearing down virtualization context\n");
 	modvm_destroy(&vm);
-	modvm_chardev_stdio_destroy(console);
+	modvm_chardev_release(console);
 }
 
 int main(void)
