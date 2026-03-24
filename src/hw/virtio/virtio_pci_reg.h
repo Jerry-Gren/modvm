@@ -39,7 +39,7 @@
 #ifndef MODVM_SRC_HW_VIRTIO_PCI_REG_H
 #define MODVM_SRC_HW_VIRTIO_PCI_REG_H
 
-#include <stdint.h>
+#include <modvm/utils/types.h>
 #include <modvm/utils/compiler.h>
 
 /* Virtio ABI version, this must match exactly */
@@ -80,8 +80,8 @@ struct virtio_pci_cap {
 	uint8_t bar; /* Where to find it. */
 	uint8_t id; /* Multiple capabilities of the same type */
 	uint8_t padding[2]; /* Pad to full dword. */
-	uint32_t offset; /* Offset within bar. */
-	uint32_t length; /* Length of the structure, in bytes. */
+	le32_t offset; /* Offset within bar. */
+	le32_t length; /* Length of the structure, in bytes. */
 } __packed;
 
 /**
@@ -91,7 +91,7 @@ struct virtio_pci_cap {
  */
 struct virtio_pci_notify_cap {
 	struct virtio_pci_cap cap;
-	uint32_t notify_off_multiplier; /* Multiplier for queue_notify_off. */
+	le32_t notify_off_multiplier; /* Multiplier for queue_notify_off. */
 } __packed;
 
 /**
@@ -102,27 +102,27 @@ struct virtio_pci_notify_cap {
  */
 struct virtio_pci_common_cfg {
 	/* About the whole device. */
-	uint32_t device_feature_select; /* read-write */
-	uint32_t device_feature; /* read-only */
-	uint32_t guest_feature_select; /* read-write */
-	uint32_t guest_feature; /* read-write */
-	uint16_t msix_config; /* read-write */
-	uint16_t num_queues; /* read-only */
+	le32_t device_feature_select; /* read-write */
+	le32_t device_feature; /* read-only */
+	le32_t guest_feature_select; /* read-write */
+	le32_t guest_feature; /* read-write */
+	le16_t msix_config; /* read-write */
+	le16_t num_queues; /* read-only */
 	uint8_t device_status; /* read-write */
 	uint8_t config_generation; /* read-only */
 
 	/* About a specific virtqueue. */
-	uint16_t queue_select; /* read-write */
-	uint16_t queue_size; /* read-write, power of 2. */
-	uint16_t queue_msix_vector; /* read-write */
-	uint16_t queue_enable; /* read-write */
-	uint16_t queue_notify_off; /* read-only */
-	uint32_t queue_desc_lo; /* read-write */
-	uint32_t queue_desc_hi; /* read-write */
-	uint32_t queue_avail_lo; /* read-write */
-	uint32_t queue_avail_hi; /* read-write */
-	uint32_t queue_used_lo; /* read-write */
-	uint32_t queue_used_hi; /* read-write */
+	le16_t queue_select; /* read-write */
+	le16_t queue_size; /* read-write, power of 2. */
+	le16_t queue_msix_vector; /* read-write */
+	le16_t queue_enable; /* read-write */
+	le16_t queue_notify_off; /* read-only */
+	le32_t queue_desc_lo; /* read-write */
+	le32_t queue_desc_hi; /* read-write */
+	le32_t queue_avail_lo; /* read-write */
+	le32_t queue_avail_hi; /* read-write */
+	le32_t queue_used_lo; /* read-write */
+	le32_t queue_used_hi; /* read-write */
 } __packed;
 
 #endif /* MODVM_SRC_HW_VIRTIO_PCI_REG_H */

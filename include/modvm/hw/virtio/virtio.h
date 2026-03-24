@@ -74,6 +74,19 @@ struct virtio_device {
 };
 
 /**
+ * virtio_device_release - standard destructor for naked virtio payloads
+ * @vdev: pointer to the virtio_device
+ *
+ * Designed to be registered as a devm action or called directly on early
+ * allocation failures. Dispatches to the payload's unrealize hook.
+ */
+static inline void virtio_device_release(struct virtio_device *vdev)
+{
+	if (vdev && vdev->ops && vdev->ops->unrealize)
+		vdev->ops->unrealize(vdev);
+}
+
+/**
  * struct virtio_mmio_pdata - platform routing data for a Virtio-MMIO transport
  * @base: the starting address on the MMIO bus
  * @irq: the pre-wired interrupt line to signal the processor

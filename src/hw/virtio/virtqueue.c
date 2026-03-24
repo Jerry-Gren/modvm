@@ -12,19 +12,19 @@
 #include "virtqueue.h"
 
 struct vring_avail {
-	uint16_t flags;
-	uint16_t idx;
-	uint16_t ring[];
+	le16_t flags;
+	le16_t idx;
+	le16_t ring[];
 } __packed;
 
 struct vring_used_elem {
-	uint32_t id;
-	uint32_t len;
+	le32_t id;
+	le32_t len;
 } __packed;
 
 struct vring_used {
-	uint16_t flags;
-	uint16_t idx;
+	le16_t flags;
+	le16_t idx;
 	struct vring_used_elem ring[];
 } __packed;
 

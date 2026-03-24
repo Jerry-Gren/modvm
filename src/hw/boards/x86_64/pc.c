@@ -17,6 +17,7 @@
 #include <modvm/hw/virtio/virtio.h>
 #include <modvm/hw/virtio/virtio_pci.h>
 #include <modvm/hw/virtio/virtio_blk.h>
+#include <modvm/hw/virtio/virtio_net.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
@@ -86,11 +87,62 @@ static int modvm_hw_pc_add_virtio_blk(struct modvm_ctx *ctx,
 		return -ENOMEM;
 
 	vpci_dev = modvm_device_alloc(ctx, "virtio-pci");
-	if (!vpci_dev)
+	if (!vpci_dev) {
+		virtio_device_release(vdev_blk);
 		return -ENOMEM;
+	}
+
+	ret = modvm_devm_add_action(vpci_dev, virtio_device_release, vdev_blk);
+	if (ret < 0) {
+		virtio_device_release(vdev_blk);
+		modvm_device_put(vpci_dev);
+		return ret;
+	}
 
 	vpci_pdata.pci_bus = pci_bus;
 	vpci_pdata.vdev = vdev_blk;
+	vpci_pdata.devfn = PCI_AUTO_DEVFN;
+	vpci_pdata.bar0_base = PCI_AUTO_MMIO;
+	vpci_pdata.interrupt_pin = 1;
+	vpci_pdata.mem_space = &ctx->accel.mem_space;
+
+	ret = modvm_device_add(vpci_dev, &vpci_pdata);
+	if (ret < 0) {
+		modvm_device_put(vpci_dev);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int modvm_hw_pc_add_virtio_net(struct modvm_ctx *ctx,
+				      struct modvm_pci_bus *pci_bus,
+				      struct modvm_net *net_backend)
+{
+	struct virtio_device *vdev_net;
+	struct modvm_device *vpci_dev;
+	struct virtio_pci_pdata vpci_pdata;
+	int ret;
+
+	vdev_net = virtio_net_create(ctx, net_backend);
+	if (!vdev_net)
+		return -ENOMEM;
+
+	vpci_dev = modvm_device_alloc(ctx, "virtio-pci");
+	if (!vpci_dev) {
+		virtio_device_release(vdev_net);
+		return -ENOMEM;
+	}
+
+	ret = modvm_devm_add_action(vpci_dev, virtio_device_release, vdev_net);
+	if (ret < 0) {
+		virtio_device_release(vdev_net);
+		modvm_device_put(vpci_dev);
+		return ret;
+	}
+
+	vpci_pdata.pci_bus = pci_bus;
+	vpci_pdata.vdev = vdev_net;
 	vpci_pdata.devfn = PCI_AUTO_DEVFN;
 	vpci_pdata.bar0_base = PCI_AUTO_MMIO;
 	vpci_pdata.interrupt_pin = 1;
@@ -219,6 +271,16 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 						 ctx->config.drives[d_idx]);
 		if (ret < 0) {
 			pr_err("failed to mount virtio block device %zu\n",
+			       d_idx);
+			return ret;
+		}
+	}
+
+	for (d_idx = 0; d_idx < ctx->config.nr_nets; d_idx++) {
+		ret = modvm_hw_pc_add_virtio_net(ctx, pci_root_bus,
+						 ctx->config.nets[d_idx]);
+		if (ret < 0) {
+			pr_err("failed to mount virtio net device %zu\n",
 			       d_idx);
 			return ret;
 		}

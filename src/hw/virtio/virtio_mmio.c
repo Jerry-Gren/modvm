@@ -214,19 +214,6 @@ static const struct modvm_device_ops virtio_mmio_ops = {
 	.write = virtio_mmio_write,
 };
 
-static void virtio_mmio_vdev_release(struct virtio_device *vdev)
-{
-	int i;
-
-	for (i = 0; i < vdev->nr_vqs; i++) {
-		if (vdev->vqs[i])
-			virtqueue_destroy(vdev->vqs[i]);
-	}
-
-	if (vdev->ops && vdev->ops->unrealize)
-		vdev->ops->unrealize(vdev);
-}
-
 static int virtio_mmio_instantiate(struct modvm_device *dev, void *pdata)
 {
 	struct virtio_mmio_pdata *plat = pdata;
@@ -257,17 +244,8 @@ static int virtio_mmio_instantiate(struct modvm_device *dev, void *pdata)
 	/* Backend lifecycle initialization */
 	if (vdev->ops->realize) {
 		ret = vdev->ops->realize(vdev);
-		if (ret < 0) {
-			if (vdev->ops->unrealize)
-				vdev->ops->unrealize(vdev);
+		if (ret < 0)
 			return ret;
-		}
-	}
-
-	ret = modvm_devm_add_action(dev, virtio_mmio_vdev_release, vdev);
-	if (ret < 0) {
-		virtio_mmio_vdev_release(vdev);
-		return ret;
 	}
 
 	/* 0x200 bytes maps standard registers and 0x100 for config space */

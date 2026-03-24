@@ -2,7 +2,7 @@
 #ifndef MODVM_HW_VIRTIO_VIRTQUEUE_H
 #define MODVM_HW_VIRTIO_VIRTQUEUE_H
 
-#include <stdint.h>
+#include <modvm/utils/types.h>
 #include <stdbool.h>
 
 #define VRING_DESC_F_NEXT 1
@@ -19,10 +19,10 @@ struct virtqueue;
  * @next: index of the next descriptor in the chain
  */
 struct vring_desc {
-	uint64_t addr;
-	uint32_t len;
-	uint16_t flags;
-	uint16_t next;
+	le64_t addr;
+	le32_t len;
+	le16_t flags;
+	le16_t next;
 } __packed;
 
 /**

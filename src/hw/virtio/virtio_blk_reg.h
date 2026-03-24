@@ -25,7 +25,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE. */
-#include <stdint.h>
+#include <modvm/utils/types.h>
 #include <modvm/utils/compiler.h>
 
 /* Feature bits */
@@ -70,7 +70,7 @@
  * struct virtio_blk_geometry - hardware cylinder/head/sector layout
  */
 struct virtio_blk_geometry {
-	uint16_t cylinders;
+	virtio16_t cylinders;
 	uint8_t heads;
 	uint8_t sectors;
 } __packed;
@@ -83,16 +83,16 @@ struct virtio_blk_geometry {
  */
 struct virtio_blk_config {
 	/* The capacity (in 512-byte sectors). */
-	uint64_t capacity;
+	virtio64_t capacity;
 	/* The maximum segment size (if VIRTIO_BLK_F_SIZE_MAX) */
-	uint32_t size_max;
+	virtio32_t size_max;
 	/* The maximum number of segments (if VIRTIO_BLK_F_SEG_MAX) */
-	uint32_t seg_max;
+	virtio32_t seg_max;
 	/* geometry of the device (if VIRTIO_BLK_F_GEOMETRY) */
 	struct virtio_blk_geometry geometry;
 
 	/* block size of device (if VIRTIO_BLK_F_BLK_SIZE) */
-	uint32_t blk_size;
+	virtio32_t blk_size;
 
 	/* the next 4 entries are guarded by VIRTIO_BLK_F_TOPOLOGY  */
 	/* exponent for physical block per logical block. */
@@ -100,16 +100,16 @@ struct virtio_blk_config {
 	/* alignment offset in logical blocks. */
 	uint8_t alignment_offset;
 	/* minimum I/O size without performance penalty in logical blocks. */
-	uint16_t min_io_size;
+	virtio16_t min_io_size;
 	/* optimal sustained I/O size in logical blocks. */
-	uint32_t opt_io_size;
+	virtio32_t opt_io_size;
 
 	/* writeback mode (if VIRTIO_BLK_F_CONFIG_WCE) */
 	uint8_t wce;
 	uint8_t unused;
 
 	/* number of vqs, only available when VIRTIO_BLK_F_MQ is set */
-	uint16_t num_queues;
+	virtio16_t num_queues;
 
 } __packed;
 
@@ -121,11 +121,11 @@ struct virtio_blk_config {
  */
 struct virtio_blk_outhdr {
 	/* VIRTIO_BLK_T* */
-	uint32_t type;
+	virtio32_t type;
 	/* io priority. */
-	uint32_t ioprio;
+	virtio32_t ioprio;
 	/* Sector (ie. 512 byte offset) */
-	uint64_t sector;
+	virtio64_t sector;
 } __packed;
 
 #endif /* MODVM_SRC_HW_VIRTIO_BLK_REG_H */

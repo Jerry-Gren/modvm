@@ -85,9 +85,15 @@ static int virtio_blk_realize(struct virtio_device *vdev)
 static void virtio_blk_unrealize(struct virtio_device *vdev)
 {
 	struct virtio_blk_ctx *ctx = vdev->priv;
+	int i;
 
 	if (WARN_ON(!ctx))
 		return;
+
+	for (i = 0; i < vdev->nr_vqs; i++) {
+		if (vdev->vqs[i])
+			virtqueue_destroy(vdev->vqs[i]);
+	}
 
 	free(ctx);
 }

@@ -69,12 +69,12 @@ static uint32_t virtio_pci_read_config(struct modvm_pci_device *pci_dev,
 	case 1:
 		return pci_dev->config_space[offset];
 	case 2: {
-		uint16_t val;
+		le16_t val;
 		memcpy(&val, &pci_dev->config_space[offset], 2);
 		return le16_to_cpu(val);
 	}
 	case 4: {
-		uint32_t val;
+		le32_t val;
 		memcpy(&val, &pci_dev->config_space[offset], 4);
 		return le32_to_cpu(val);
 	}
@@ -92,7 +92,7 @@ static void virtio_pci_write_config(struct modvm_pci_device *pci_dev,
 		return;
 
 	if (offset == 0x10 && val == 0xFFFFFFFF && size == 4) {
-		uint32_t size_mask = cpu_to_le32(~(ctx->bar0_size - 1));
+		le32_t size_mask = cpu_to_le32(~(ctx->bar0_size - 1));
 		memcpy(&pci_dev->config_space[offset], &size_mask, 4);
 		return;
 	}
@@ -102,12 +102,12 @@ static void virtio_pci_write_config(struct modvm_pci_device *pci_dev,
 		pci_dev->config_space[offset] = (uint8_t)val;
 		break;
 	case 2: {
-		uint16_t v16 = cpu_to_le16((uint16_t)val);
+		le16_t v16 = cpu_to_le16((uint16_t)val);
 		memcpy(&pci_dev->config_space[offset], &v16, 2);
 		break;
 	}
 	case 4: {
-		uint32_t v32 = cpu_to_le32(val);
+		le32_t v32 = cpu_to_le32(val);
 		memcpy(&pci_dev->config_space[offset], &v32, 4);
 		break;
 	}
@@ -131,10 +131,12 @@ static uint64_t virtio_pci_bar0_read(struct modvm_device *dev, uint64_t offset,
 			features |=
 				(1ULL << 32); /* Advertise VIRTIO_F_VERSION_1 */
 
-			if (ctx->common_cfg.device_feature_select == 0)
+			if (le32_to_cpu(
+				    ctx->common_cfg.device_feature_select) == 0)
 				val = (uint32_t)(features & 0xFFFFFFFF);
-			else if (ctx->common_cfg.device_feature_select ==
-				 cpu_to_le32(1))
+			else if (le32_to_cpu(ctx->common_cfg
+						     .device_feature_select) ==
+				 1)
 				val = (uint32_t)((features >> 32) & 0xFFFFFFFF);
 
 			return val; /* Guest expects native byte order for MMIO read return value in our bus */
@@ -154,13 +156,13 @@ static uint64_t virtio_pci_bar0_read(struct modvm_device *dev, uint64_t offset,
 			val = *((uint8_t *)&ctx->common_cfg + offset);
 			break;
 		case 2: {
-			uint16_t v16;
+			le16_t v16;
 			memcpy(&v16, (uint8_t *)&ctx->common_cfg + offset, 2);
 			val = le16_to_cpu(v16);
 			break;
 		}
 		case 4: {
-			uint32_t v32;
+			le32_t v32;
 			memcpy(&v32, (uint8_t *)&ctx->common_cfg + offset, 4);
 			val = le32_to_cpu(v32);
 			break;
@@ -198,12 +200,12 @@ static void virtio_pci_bar0_write(struct modvm_device *dev, uint64_t offset,
 			*((uint8_t *)&ctx->common_cfg + offset) = (uint8_t)val;
 			break;
 		case 2: {
-			uint16_t v16 = cpu_to_le16((uint16_t)val);
+			le16_t v16 = cpu_to_le16((uint16_t)val);
 			memcpy((uint8_t *)&ctx->common_cfg + offset, &v16, 2);
 			break;
 		}
 		case 4: {
-			uint32_t v32 = cpu_to_le32((uint32_t)val);
+			le32_t v32 = cpu_to_le32((uint32_t)val);
 			memcpy((uint8_t *)&ctx->common_cfg + offset, &v32, 4);
 			break;
 		}
@@ -217,19 +219,23 @@ static void virtio_pci_bar0_write(struct modvm_device *dev, uint64_t offset,
 				ctx->common_cfg.queue_size = cpu_to_le16(
 					virtqueue_get_size(vdev->vqs[q_sel]));
 			else
-				ctx->common_cfg.queue_size = 0;
+				ctx->common_cfg.queue_size = cpu_to_le16(0);
 			return;
 		}
 
 		if (offset ==
 		    offsetof(struct virtio_pci_common_cfg, guest_feature)) {
-			uint32_t g_val = le32_to_cpu((uint32_t)val);
-			if (ctx->common_cfg.guest_feature_select == 0)
+			uint32_t g_val =
+				le32_to_cpu(ctx->common_cfg.guest_feature);
+
+			if (le32_to_cpu(ctx->common_cfg.guest_feature_select) ==
+			    0)
 				ctx->driver_features = (ctx->driver_features &
 							0xFFFFFFFF00000000ULL) |
 						       g_val;
-			else if (ctx->common_cfg.guest_feature_select ==
-				 cpu_to_le32(1))
+			else if (le32_to_cpu(
+					 ctx->common_cfg.guest_feature_select) ==
+				 1)
 				ctx->driver_features =
 					(ctx->driver_features & 0xFFFFFFFFULL) |
 					((uint64_t)g_val << 32);
@@ -277,7 +283,9 @@ static void virtio_pci_bar0_write(struct modvm_device *dev, uint64_t offset,
 	}
 
 	if (offset == 0x100) { /* Notify Config Region */
-		q_sel = le16_to_cpu((uint16_t)val);
+		le16_t v16;
+		v16.__val = (uint16_t)val;
+		q_sel = le16_to_cpu(v16);
 		if (q_sel < vdev->nr_vqs && likely(vdev->ops->notify_queue))
 			vdev->ops->notify_queue(vdev, q_sel);
 		return;
@@ -300,19 +308,6 @@ static const struct modvm_pci_device_ops virtio_pci_config_ops = {
 	.write_config = virtio_pci_write_config,
 };
 
-static void virtio_pci_vdev_release(struct virtio_device *vdev)
-{
-	int i;
-
-	for (i = 0; i < vdev->nr_vqs; i++) {
-		if (vdev->vqs[i])
-			virtqueue_destroy(vdev->vqs[i]);
-	}
-
-	if (vdev->ops && vdev->ops->unrealize)
-		vdev->ops->unrealize(vdev);
-}
-
 /**
  * virtio_pci_build_config_space - construct the standard PCI capability list
  * @ctx: the virtio pci context
@@ -322,8 +317,8 @@ static void virtio_pci_build_config_space(struct virtio_pci_ctx *ctx,
 					  uint64_t bar0_base)
 {
 	uint8_t *cfg = ctx->pci_dev.config_space;
-	uint16_t v16;
-	uint32_t v32;
+	le16_t v16;
+	le32_t v32;
 	struct virtio_pci_cap cap = { 0 };
 	struct virtio_pci_notify_cap notif = { 0 };
 
@@ -404,7 +399,6 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 
 	ctx->vdev = vdev;
 	ctx->bar0_size = (uint32_t)os_page_size();
-	ctx->common_cfg.num_queues = cpu_to_le16(vdev->nr_vqs);
 
 	if (plat->bar0_base == PCI_AUTO_MMIO) {
 		plat->bar0_base =
@@ -427,17 +421,8 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 	/* Backend lifecycle initialization */
 	if (vdev->ops->realize) {
 		ret = vdev->ops->realize(vdev);
-		if (ret < 0) {
-			if (vdev->ops->unrealize)
-				vdev->ops->unrealize(vdev);
+		if (ret < 0)
 			return ret;
-		}
-	}
-
-	ret = modvm_devm_add_action(dev, virtio_pci_vdev_release, vdev);
-	if (ret < 0) {
-		virtio_pci_vdev_release(vdev);
-		return ret;
 	}
 
 	/* MUST set this AFTER realize() assigns vdev->nr_vqs */
