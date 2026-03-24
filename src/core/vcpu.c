@@ -72,6 +72,44 @@ int modvm_vcpu_set_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
 }
 
 /**
+ * modvm_vcpu_get_reg - read a single abstract register
+ * @vcpu: the virtual processor
+ * @reg_id: abstract architectural register identifier
+ * @val: pointer to store the retrieved value
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+int modvm_vcpu_get_reg(struct modvm_vcpu *vcpu, uint64_t reg_id, uint64_t *val)
+{
+	if (WARN_ON(!vcpu || !vcpu->ops || !val))
+		return -EINVAL;
+
+	if (!vcpu->ops->get_reg)
+		return -ENOTSUP;
+
+	return vcpu->ops->get_reg(vcpu, reg_id, val);
+}
+
+/**
+ * modvm_vcpu_set_reg - write a single abstract register
+ * @vcpu: the virtual processor
+ * @reg_id: abstract architectural register identifier
+ * @val: the payload to commit
+ *
+ * Return: 0 on success, or a negative error code.
+ */
+int modvm_vcpu_set_reg(struct modvm_vcpu *vcpu, uint64_t reg_id, uint64_t val)
+{
+	if (WARN_ON(!vcpu || !vcpu->ops))
+		return -EINVAL;
+
+	if (!vcpu->ops->set_reg)
+		return -ENOTSUP;
+
+	return vcpu->ops->set_reg(vcpu, reg_id, val);
+}
+
+/**
  * modvm_vcpu_run - transition into the hardware execution loop
  * @vcpu: the virtual processor to run
  *

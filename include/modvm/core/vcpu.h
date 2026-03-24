@@ -22,9 +22,11 @@ enum modvm_reg_class {
  * struct modvm_vcpu_ops - backend operations for virtual processors
  * @init: initialize processor state
  * @destroy: release processor resources
- * @get_regs: read architectural register group
- * @set_regs: write architectural register group
- * @run: enter hardware execution loop
+ * @get_regs: read full architectural register group (for migration/debug)
+ * @set_regs: write full architectural register group (for migration/debug)
+ * @get_reg: read a single architectural register by abstract ID
+ * @set_reg: write a single architectural register by abstract ID
+ * @run: enter hardware/emulator execution loop
  */
 struct modvm_vcpu_ops {
 	int (*init)(struct modvm_vcpu *vcpu);
@@ -33,6 +35,8 @@ struct modvm_vcpu_ops {
 			void *buf, size_t size);
 	int (*set_regs)(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
 			const void *buf, size_t size);
+	int (*get_reg)(struct modvm_vcpu *vcpu, uint64_t reg_id, uint64_t *val);
+	int (*set_reg)(struct modvm_vcpu *vcpu, uint64_t reg_id, uint64_t val);
 	int (*run)(struct modvm_vcpu *vcpu);
 };
 
@@ -55,6 +59,8 @@ int modvm_vcpu_get_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
 			void *buf, size_t size);
 int modvm_vcpu_set_regs(struct modvm_vcpu *vcpu, enum modvm_reg_class reg_class,
 			const void *buf, size_t size);
+int modvm_vcpu_get_reg(struct modvm_vcpu *vcpu, uint64_t reg_id, uint64_t *val);
+int modvm_vcpu_set_reg(struct modvm_vcpu *vcpu, uint64_t reg_id, uint64_t val);
 int modvm_vcpu_run(struct modvm_vcpu *vcpu);
 void modvm_vcpu_destroy(struct modvm_vcpu *vcpu);
 

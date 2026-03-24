@@ -108,7 +108,6 @@ err_uart:
 static int mock_board_reset(struct modvm_ctx *ctx)
 {
 	struct modvm_x86_sregs sregs;
-	struct modvm_x86_regs regs;
 	void *hva;
 	int ret;
 
@@ -124,7 +123,7 @@ static int mock_board_reset(struct modvm_ctx *ctx)
 
 	ret = modvm_vcpu_get_regs(ctx->vcpus[0], MODVM_REG_SREGS, &sregs,
 				  sizeof(sregs));
-	if (ret < 0)
+	if (WARN_ON(ret < 0))
 		return ret;
 
 	sregs.cs.selector = 0x0000;
@@ -132,16 +131,15 @@ static int mock_board_reset(struct modvm_ctx *ctx)
 
 	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_SREGS, &sregs,
 				  sizeof(sregs));
-	if (ret < 0)
+	if (WARN_ON(ret < 0))
 		return ret;
 
-	memset(&regs, 0, sizeof(regs));
-	regs.rip = 0x0000;
-	regs.rflags = 0x02;
+	ret = modvm_vcpu_set_reg(ctx->vcpus[0], MODVM_X86_REG_RIP, 0x0000);
+	if (WARN_ON(ret < 0))
+		return ret;
 
-	ret = modvm_vcpu_set_regs(ctx->vcpus[0], MODVM_REG_GPR, &regs,
-				  sizeof(regs));
-	if (ret < 0)
+	ret = modvm_vcpu_set_reg(ctx->vcpus[0], MODVM_X86_REG_RFLAGS, 0x02);
+	if (WARN_ON(ret < 0))
 		return ret;
 
 	return 0;

@@ -310,6 +310,155 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 	return -ENOTSUP;
 }
 
+int modvm_kvm_arch_vcpu_get_reg(struct modvm_vcpu *vcpu, uint64_t reg_id,
+				uint64_t *val)
+{
+	struct modvm_kvm_vcpu_state *state = vcpu->priv;
+	struct kvm_regs k_regs;
+
+	if (reg_id <= MODVM_X86_REG_RFLAGS) {
+		if (ioctl(state->vcpu_fd, KVM_GET_REGS, &k_regs) < 0)
+			return -errno;
+
+		switch (reg_id) {
+		case MODVM_X86_REG_RAX:
+			*val = k_regs.rax;
+			break;
+		case MODVM_X86_REG_RBX:
+			*val = k_regs.rbx;
+			break;
+		case MODVM_X86_REG_RCX:
+			*val = k_regs.rcx;
+			break;
+		case MODVM_X86_REG_RDX:
+			*val = k_regs.rdx;
+			break;
+		case MODVM_X86_REG_RSI:
+			*val = k_regs.rsi;
+			break;
+		case MODVM_X86_REG_RDI:
+			*val = k_regs.rdi;
+			break;
+		case MODVM_X86_REG_RSP:
+			*val = k_regs.rsp;
+			break;
+		case MODVM_X86_REG_RBP:
+			*val = k_regs.rbp;
+			break;
+		case MODVM_X86_REG_R8:
+			*val = k_regs.r8;
+			break;
+		case MODVM_X86_REG_R9:
+			*val = k_regs.r9;
+			break;
+		case MODVM_X86_REG_R10:
+			*val = k_regs.r10;
+			break;
+		case MODVM_X86_REG_R11:
+			*val = k_regs.r11;
+			break;
+		case MODVM_X86_REG_R12:
+			*val = k_regs.r12;
+			break;
+		case MODVM_X86_REG_R13:
+			*val = k_regs.r13;
+			break;
+		case MODVM_X86_REG_R14:
+			*val = k_regs.r14;
+			break;
+		case MODVM_X86_REG_R15:
+			*val = k_regs.r15;
+			break;
+		case MODVM_X86_REG_RIP:
+			*val = k_regs.rip;
+			break;
+		case MODVM_X86_REG_RFLAGS:
+			*val = k_regs.rflags;
+			break;
+		default:
+			return -EINVAL;
+		}
+		return 0;
+	}
+	return -ENOTSUP;
+}
+
+int modvm_kvm_arch_vcpu_set_reg(struct modvm_vcpu *vcpu, uint64_t reg_id,
+				uint64_t val)
+{
+	struct modvm_kvm_vcpu_state *state = vcpu->priv;
+	struct kvm_regs k_regs;
+
+	if (reg_id <= MODVM_X86_REG_RFLAGS) {
+		if (ioctl(state->vcpu_fd, KVM_GET_REGS, &k_regs) < 0)
+			return -errno;
+
+		switch (reg_id) {
+		case MODVM_X86_REG_RAX:
+			k_regs.rax = val;
+			break;
+		case MODVM_X86_REG_RBX:
+			k_regs.rbx = val;
+			break;
+		case MODVM_X86_REG_RCX:
+			k_regs.rcx = val;
+			break;
+		case MODVM_X86_REG_RDX:
+			k_regs.rdx = val;
+			break;
+		case MODVM_X86_REG_RSI:
+			k_regs.rsi = val;
+			break;
+		case MODVM_X86_REG_RDI:
+			k_regs.rdi = val;
+			break;
+		case MODVM_X86_REG_RSP:
+			k_regs.rsp = val;
+			break;
+		case MODVM_X86_REG_RBP:
+			k_regs.rbp = val;
+			break;
+		case MODVM_X86_REG_R8:
+			k_regs.r8 = val;
+			break;
+		case MODVM_X86_REG_R9:
+			k_regs.r9 = val;
+			break;
+		case MODVM_X86_REG_R10:
+			k_regs.r10 = val;
+			break;
+		case MODVM_X86_REG_R11:
+			k_regs.r11 = val;
+			break;
+		case MODVM_X86_REG_R12:
+			k_regs.r12 = val;
+			break;
+		case MODVM_X86_REG_R13:
+			k_regs.r13 = val;
+			break;
+		case MODVM_X86_REG_R14:
+			k_regs.r14 = val;
+			break;
+		case MODVM_X86_REG_R15:
+			k_regs.r15 = val;
+			break;
+		case MODVM_X86_REG_RIP:
+			k_regs.rip = val;
+			break;
+		case MODVM_X86_REG_RFLAGS:
+			k_regs.rflags = val;
+			break;
+		default:
+			return -EINVAL;
+		}
+
+		if (ioctl(state->vcpu_fd, KVM_SET_REGS, &k_regs) < 0)
+			return -errno;
+		return 0;
+	}
+	return -ENOTSUP;
+}
+
 /**
  * modvm_kvm_arch_vcpu_handle_exit - handle architecture-specific traps
  * @vcpu: the virtual processor

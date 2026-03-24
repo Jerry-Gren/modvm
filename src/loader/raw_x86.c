@@ -30,7 +30,6 @@ static int raw_loader_load(struct modvm_ctx *ctx, const char *opts,
 static int raw_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 {
 	struct modvm_x86_sregs sregs;
-	struct modvm_x86_regs regs;
 	int ret;
 
 	(void)priv;
@@ -47,11 +46,15 @@ static int raw_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 	if (WARN_ON(ret < 0))
 		return ret;
 
-	memset(&regs, 0, sizeof(regs));
-	regs.rip = 0xFFF0;
-	regs.rflags = 0x02;
+	ret = modvm_vcpu_set_reg(vcpu, MODVM_X86_REG_RIP, 0xFFF0);
+	if (WARN_ON(ret < 0))
+		return ret;
 
-	return modvm_vcpu_set_regs(vcpu, MODVM_REG_GPR, &regs, sizeof(regs));
+	ret = modvm_vcpu_set_reg(vcpu, MODVM_X86_REG_RFLAGS, 0x02);
+	if (WARN_ON(ret < 0))
+		return ret;
+
+	return 0;
 }
 
 static const struct modvm_loader_class raw_class = {

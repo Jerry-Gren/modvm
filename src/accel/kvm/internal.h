@@ -36,6 +36,10 @@ int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
 int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 				 enum modvm_reg_class reg_class,
 				 const void *buf, size_t size);
+int modvm_kvm_arch_vcpu_get_reg(struct modvm_vcpu *vcpu, uint64_t reg_id,
+				uint64_t *val);
+int modvm_kvm_arch_vcpu_set_reg(struct modvm_vcpu *vcpu, uint64_t reg_id,
+				uint64_t val);
 int modvm_kvm_arch_vcpu_handle_exit(struct modvm_vcpu *vcpu,
 				    struct kvm_run *run);
 

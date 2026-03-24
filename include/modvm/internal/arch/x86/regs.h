@@ -5,6 +5,31 @@
 #include <stdint.h>
 
 /**
+ * enum modvm_x86_reg_id - standardized abstract IDs for x86 architectural registers
+ * * Used exclusively by loaders and backends for single-register routing.
+ */
+enum modvm_x86_reg_id {
+	MODVM_X86_REG_RAX = 0,
+	MODVM_X86_REG_RBX,
+	MODVM_X86_REG_RCX,
+	MODVM_X86_REG_RDX,
+	MODVM_X86_REG_RSI,
+	MODVM_X86_REG_RDI,
+	MODVM_X86_REG_RSP,
+	MODVM_X86_REG_RBP,
+	MODVM_X86_REG_R8,
+	MODVM_X86_REG_R9,
+	MODVM_X86_REG_R10,
+	MODVM_X86_REG_R11,
+	MODVM_X86_REG_R12,
+	MODVM_X86_REG_R13,
+	MODVM_X86_REG_R14,
+	MODVM_X86_REG_R15,
+	MODVM_X86_REG_RIP,
+	MODVM_X86_REG_RFLAGS,
+};
+
+/**
  * struct modvm_x86_segment - standardized x86 segment descriptor
  * @base: linear base address
  * @limit: segment limit

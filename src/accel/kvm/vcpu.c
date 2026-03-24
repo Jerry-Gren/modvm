@@ -93,6 +93,18 @@ static int kvm_vcpu_set_regs_wrap(struct modvm_vcpu *vcpu,
 	return modvm_kvm_arch_vcpu_set_regs(vcpu, reg_class, buf, size);
 }
 
+static int kvm_vcpu_get_reg_wrap(struct modvm_vcpu *vcpu, uint64_t reg_id,
+				 uint64_t *val)
+{
+	return modvm_kvm_arch_vcpu_get_reg(vcpu, reg_id, val);
+}
+
+static int kvm_vcpu_set_reg_wrap(struct modvm_vcpu *vcpu, uint64_t reg_id,
+				 uint64_t val)
+{
+	return modvm_kvm_arch_vcpu_set_reg(vcpu, reg_id, val);
+}
+
 /**
  * modvm_kvm_vcpu_handle_mmio_exit - route memory-mapped IO traps to the system bus
  * @vcpu: the trapped virtual processor
@@ -231,5 +243,7 @@ const struct modvm_vcpu_ops modvm_kvm_vcpu_ops = {
 	.destroy = kvm_vcpu_destroy,
 	.get_regs = kvm_vcpu_get_regs_wrap,
 	.set_regs = kvm_vcpu_set_regs_wrap,
+	.get_reg = kvm_vcpu_get_reg_wrap,
+	.set_reg = kvm_vcpu_set_reg_wrap,
 	.run = kvm_vcpu_run,
 };

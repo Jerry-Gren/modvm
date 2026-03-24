@@ -321,7 +321,6 @@ static int linux_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 {
 	struct linux_loader_ctx *lctx = priv;
 	struct modvm_x86_sregs sregs;
-	struct modvm_x86_regs regs;
 	int ret;
 
 	ret = modvm_vcpu_get_regs(vcpu, MODVM_REG_SREGS, &sregs, sizeof(sregs));
@@ -364,12 +363,15 @@ static int linux_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)
 	if (WARN_ON(ret < 0))
 		return ret;
 
-	memset(&regs, 0, sizeof(regs));
-	regs.rflags = 0x02;
-	regs.rip = lctx->entry_pc;
-	regs.rsi = lctx->zero_page;
+	ret = modvm_vcpu_set_reg(vcpu, MODVM_X86_REG_RFLAGS, 0x02);
+	if (WARN_ON(ret < 0))
+		return ret;
 
-	ret = modvm_vcpu_set_regs(vcpu, MODVM_REG_GPR, &regs, sizeof(regs));
+	ret = modvm_vcpu_set_reg(vcpu, MODVM_X86_REG_RIP, lctx->entry_pc);
+	if (WARN_ON(ret < 0))
+		return ret;
+
+	ret = modvm_vcpu_set_reg(vcpu, MODVM_X86_REG_RSI, lctx->zero_page);
 	if (WARN_ON(ret < 0))
 		return ret;
 
