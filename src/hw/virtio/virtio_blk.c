@@ -58,20 +58,20 @@ static int virtio_blk_realize(struct virtio_device *vdev)
 	capacity_bytes = ctx->backend->ops->get_capacity(ctx->backend);
 
 	memset(&ctx->config, 0, sizeof(ctx->config));
-	ctx->config.capacity = capacity_bytes / SECTOR_SIZE;
-	ctx->config.blk_size = SECTOR_SIZE;
-	ctx->config.size_max = 65536;
-	ctx->config.seg_max =
-		128 - 2; /* Account for header and status descriptors */
+	ctx->config.capacity = cpu_to_le64(capacity_bytes / SECTOR_SIZE);
+	ctx->config.blk_size = cpu_to_le32(SECTOR_SIZE);
+	ctx->config.size_max = cpu_to_le32(65536);
+	ctx->config.seg_max = cpu_to_le32(
+		128 - 2); /* Account for header and status descriptors */
 
 	/* Synthetic standard geometry */
-	ctx->config.geometry.cylinders =
-		(uint16_t)(ctx->config.capacity / (16 * 63));
+	ctx->config.geometry.cylinders = cpu_to_le16(
+		(uint16_t)((capacity_bytes / SECTOR_SIZE) / (16 * 63)));
 	ctx->config.geometry.heads = 16;
 	ctx->config.geometry.sectors = 63;
 
 	pr_info("virtio-blk realized with capacity %llu sectors\n",
-		ctx->config.capacity);
+		(unsigned long long)(capacity_bytes / SECTOR_SIZE));
 
 	return 0;
 }

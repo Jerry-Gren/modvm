@@ -5,11 +5,10 @@
 #include <modvm/core/bus.h>
 #include <modvm/core/modvm.h>
 #include <modvm/core/devm.h>
+#include <modvm/hw/misc/debug_exit.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
-
-#define DEBUG_EXIT_BASE_PORT 0x500
 
 #undef pr_fmt
 #define pr_fmt(fmt) "debug_exit: " fmt
@@ -37,16 +36,18 @@ static const struct modvm_device_ops debug_exit_ops = {
 /**
  * debug_exit_instantiate - allocate and register the debug exit peripheral
  * @dev: the abstract device object assigned by the core framework
- * @pdata: immutable routing configuration (unused)
+ * @pdata: immutable routing configuration
  *
  * Return: 0 upon successful initialization, or a negative error code.
  */
 static int debug_exit_instantiate(struct modvm_device *dev, void *pdata)
 {
+	struct modvm_debug_exit_pdata *plat = pdata;
 	struct debug_exit_ctx *priv;
 	int ret;
 
-	(void)pdata;
+	if (WARN_ON(!plat))
+		return -EINVAL;
 
 	priv = modvm_devm_zalloc(dev, sizeof(*priv));
 	if (!priv)
@@ -57,10 +58,12 @@ static int debug_exit_instantiate(struct modvm_device *dev, void *pdata)
 	dev->ops = &debug_exit_ops;
 	dev->priv = priv;
 
-	ret = modvm_bus_register_region(MODVM_BUS_PIO, DEBUG_EXIT_BASE_PORT, 1,
-					dev);
+	ret = modvm_bus_register_region(plat->bus_type, plat->base, 1, dev);
 	if (ret < 0)
 		return ret;
+
+	pr_info("debug exit device attached to %s bus at 0x%08lx\n",
+		plat->bus_type == MODVM_BUS_MMIO ? "mmio" : "pio", plat->base);
 
 	return 0;
 }

@@ -8,6 +8,7 @@
 #include <modvm/core/modvm.h>
 #include <modvm/core/device.h>
 #include <modvm/core/devm.h>
+#include <modvm/hw/misc/debug_exit.h>
 #include <modvm/core/loader.h>
 #include <modvm/core/pci.h>
 #include <modvm/hw/char/serial.h>
@@ -117,6 +118,7 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 {
 	struct modvm_device *uart, *exit_dev, *pci_bridge;
 	struct modvm_serial_pdata uart_pdata;
+	struct modvm_debug_exit_pdata exit_pdata;
 	struct pio_bridge_pdata bridge_pdata;
 	struct pc_irq_route *route;
 	struct modvm_pci_bus *pci_root_bus = NULL;
@@ -187,6 +189,7 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 	bridge_pdata.config_addr_port = 0xCF8;
 	bridge_pdata.config_data_port = 0xCFC;
 	bridge_pdata.mmio_base = PC_LOW_RAM_MAX;
+	bridge_pdata.mmio_size = PC_HIGH_RAM_BASE - PC_LOW_RAM_MAX;
 	bridge_pdata.out_bus = &pci_root_bus;
 
 	for (i = 0; i < 4; i++) {
@@ -228,7 +231,10 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 	if (!exit_dev)
 		return -ENOMEM;
 
-	ret = modvm_device_add(exit_dev, NULL);
+	exit_pdata.bus_type = MODVM_BUS_PIO;
+	exit_pdata.base = 0x500;
+
+	ret = modvm_device_add(exit_dev, &exit_pdata);
 	if (ret < 0) {
 		modvm_device_put(exit_dev);
 		return ret;
@@ -256,7 +262,8 @@ static int modvm_hw_pc_reset(struct modvm_ctx *ctx)
 			return ret;
 		}
 	} else {
-		pr_warn("no loader or firmware specified, processor will halt\n");
+		pr_err("no loader or firmware specified, aborting boot\n");
+		return -ENOENT;
 	}
 
 	return 0;

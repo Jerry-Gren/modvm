@@ -9,6 +9,7 @@
 #include <modvm/core/board.h>
 #include <modvm/core/device.h>
 #include <modvm/core/devm.h>
+#include <modvm/hw/misc/debug_exit.h>
 #include <modvm/core/memory.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
@@ -42,7 +43,8 @@ static int mock_board_init(struct modvm_ctx *ctx)
 {
 	struct modvm_device *uart;
 	struct modvm_device *exit_dev;
-	struct modvm_serial_pdata pdata;
+	struct modvm_serial_pdata uart_pdata;
+	struct modvm_debug_exit_pdata exit_pdata;
 	struct mock_irq_route *route;
 	int ret;
 
@@ -69,18 +71,18 @@ static int mock_board_init(struct modvm_ctx *ctx)
 	route->accel = &ctx->accel;
 	route->gsi = 4;
 
-	pdata.bus_type = MODVM_BUS_PIO;
-	pdata.base = 0x3f8;
-	pdata.reg_shift = 0;
-	pdata.console = ctx->config.console;
-	pdata.event_loop = &ctx->event_loop;
-	pdata.irq = modvm_devm_irq_alloc(uart, mock_irq_handler, route);
-	if (!pdata.irq) {
+	uart_pdata.bus_type = MODVM_BUS_PIO;
+	uart_pdata.base = 0x3f8;
+	uart_pdata.reg_shift = 0;
+	uart_pdata.console = ctx->config.console;
+	uart_pdata.event_loop = &ctx->event_loop;
+	uart_pdata.irq = modvm_devm_irq_alloc(uart, mock_irq_handler, route);
+	if (!uart_pdata.irq) {
 		ret = -ENOMEM;
 		goto err_uart;
 	}
 
-	ret = modvm_device_add(uart, &pdata);
+	ret = modvm_device_add(uart, &uart_pdata);
 	if (ret < 0) {
 		pr_err("failed to probe uart peripheral\n");
 		goto err_uart;
@@ -90,7 +92,10 @@ static int mock_board_init(struct modvm_ctx *ctx)
 	if (!exit_dev)
 		return -ENOMEM;
 
-	ret = modvm_device_add(exit_dev, NULL);
+	exit_pdata.bus_type = MODVM_BUS_PIO;
+	exit_pdata.base = 0x500;
+
+	ret = modvm_device_add(exit_dev, &exit_pdata);
 	if (ret < 0) {
 		pr_err("failed to probe debug exit device\n");
 		modvm_device_put(exit_dev);

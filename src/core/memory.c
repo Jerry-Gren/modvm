@@ -197,3 +197,38 @@ void modvm_mem_space_destroy(struct modvm_mem_space *space)
 
 	space->total_ram = 0;
 }
+
+/**
+ * modvm_mem_gpa_to_hva_clamp - safely resolve GPA with boundary truncation
+ * @space: the memory space containing the topology
+ * @gpa: the absolute physical address requested
+ * @len: the requested payload length
+ * @out_len: pointer to store the contiguous maximum length available
+ *
+ * Traverses the topology to translate guest physical coordinates into host
+ * virtual pointers. If the requested length exceeds the contiguous bound of
+ * the current memory region, out_len is truncated to the safe boundary.
+ *
+ * Return: host virtual address pointer, or NULL if unmapped.
+ */
+void *modvm_mem_gpa_to_hva_clamp(struct modvm_mem_space *space, uint64_t gpa,
+				 size_t len, size_t *out_len)
+{
+	struct modvm_mem_region *pos;
+
+	if (WARN_ON(!space || !out_len))
+		return NULL;
+
+	list_for_each_entry(pos, &space->regions, node)
+	{
+		if (gpa >= pos->gpa && gpa < pos->gpa + pos->size) {
+			uint64_t offset = gpa - pos->gpa;
+			size_t avail = pos->size - offset;
+
+			*out_len = (len < avail) ? len : avail;
+			return (uint8_t *)pos->hva + offset;
+		}
+	}
+
+	return NULL;
+}

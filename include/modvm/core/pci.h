@@ -72,6 +72,7 @@ struct modvm_pci_device {
  * @sys_data: host bridge closure data shared across callbacks
  * @next_devfn: cursor for automatic devfn allocation
  * @mmio_alloc_cursor: cursor for automatic MMIO window allocation
+ * @mmio_limit: maximum boundary for MMIO allocations
  */
 struct modvm_pci_bus {
 	struct list_head devices;
@@ -80,10 +81,12 @@ struct modvm_pci_bus {
 
 	uint8_t next_devfn;
 	uint64_t mmio_alloc_cursor;
+	uint64_t mmio_limit;
 };
 
 void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
-			modvm_pci_set_irq_cb_t set_irq_cb, void *sys_data);
+			uint64_t mmio_size, modvm_pci_set_irq_cb_t set_irq_cb,
+			void *sys_data);
 uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size);
 int modvm_pci_device_register(struct modvm_pci_bus *bus,
 			      struct modvm_pci_device *pci_dev);

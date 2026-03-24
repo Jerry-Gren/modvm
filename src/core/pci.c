@@ -13,11 +13,13 @@
  * modvm_pci_bus_init - initialize a virtual PCI bus topology
  * @bus: the PCI bus instance to initialize
  * @mmio_base: starting physical address for dynamic MMIO window allocations
+ * @mmio_size: capacity of the hardware window backing MMIO ranges
  * @set_irq_cb: host bridge hook for interrupt routing
  * @sys_data: host bridge closure data
  */
 void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
-			modvm_pci_set_irq_cb_t set_irq_cb, void *sys_data)
+			uint64_t mmio_size, modvm_pci_set_irq_cb_t set_irq_cb,
+			void *sys_data)
 {
 	if (WARN_ON(!bus))
 		return;
@@ -28,6 +30,7 @@ void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
 
 	bus->next_devfn = 8;
 	bus->mmio_alloc_cursor = mmio_base;
+	bus->mmio_limit = mmio_base + mmio_size;
 }
 
 /**
@@ -45,6 +48,16 @@ uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size)
 		return 0;
 
 	base = (bus->mmio_alloc_cursor + size - 1) & ~(size - 1);
+
+	if (unlikely(base < bus->mmio_alloc_cursor ||
+		     base + size > bus->mmio_limit)) {
+		pr_err("PCI MMIO window exhausted (requested: %zu, available: %llu)\n",
+		       size,
+		       (unsigned long long)(bus->mmio_limit -
+					    bus->mmio_alloc_cursor));
+		return 0;
+	}
+
 	bus->mmio_alloc_cursor = base + size;
 
 	return base;

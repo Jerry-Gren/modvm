@@ -126,6 +126,8 @@ int virtqueue_set_addrs(struct virtqueue *vq, uint64_t desc_gpa,
  * @max_bufs: maximum capacity of the provided array
  *
  * This function resides on the hot path and processes I/O rings dynamically.
+ * It incorporates a robust scatter-gather splitting mechanism to securely
+ * handle guest DMA descriptors that span across disjoint physical memory regions.
  *
  * Return: number of buffers populated, 0 if empty, or a negative error code.
  */
@@ -157,19 +159,39 @@ int virtqueue_pop(struct virtqueue *vq, uint16_t *out_desc_idx,
 
 	do {
 		struct vring_desc *desc = &vq->desc_table[current_idx];
-
-		if (unlikely(num_bufs >= max_bufs))
-			return -ENOSPC;
-
-		bufs[num_bufs].hva =
-			modvm_mem_gpa_to_hva(vq->mem, le64_to_cpu(desc->addr));
-		if (unlikely(!bufs[num_bufs].hva))
-			return -EFAULT;
-
-		bufs[num_bufs].len = le32_to_cpu(desc->len);
-		bufs[num_bufs].is_write =
+		uint64_t gpa = le64_to_cpu(desc->addr);
+		uint32_t len = le32_to_cpu(desc->len);
+		bool is_write =
 			(le16_to_cpu(desc->flags) & VRING_DESC_F_WRITE) != 0;
-		num_bufs++;
+
+		/*
+		 * A single guest descriptor might cross a physical memory region
+		 * boundary (e.g., spanning across the PCI hole). We must slice
+		 * it into multiple contiguous host virtual buffers.
+		 */
+		while (len > 0) {
+			size_t chunk_len;
+			void *hva;
+
+			if (unlikely(num_bufs >= max_bufs))
+				return -ENOSPC;
+
+			hva = modvm_mem_gpa_to_hva_clamp(vq->mem, gpa, len,
+							 &chunk_len);
+			if (unlikely(!hva)) {
+				pr_err("virtio trap: malicious or unmapped gpa 0x%lx\n",
+				       gpa);
+				return -EFAULT;
+			}
+
+			bufs[num_bufs].hva = hva;
+			bufs[num_bufs].len = (uint32_t)chunk_len;
+			bufs[num_bufs].is_write = is_write;
+			num_bufs++;
+
+			gpa += chunk_len;
+			len -= chunk_len;
+		}
 
 		if (!(le16_to_cpu(desc->flags) & VRING_DESC_F_NEXT))
 			break;

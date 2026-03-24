@@ -72,5 +72,7 @@ int modvm_mem_space_init(struct modvm_mem_space *space,
 			 modvm_mem_unmap_cb_t unmap_cb, void *data);
 void modvm_mem_space_destroy(struct modvm_mem_space *space);
 void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, uint64_t gpa);
+void *modvm_mem_gpa_to_hva_clamp(struct modvm_mem_space *space, uint64_t gpa,
+				 size_t len, size_t *out_len);
 
 #endif /* MODVM_CORE_MEMORY_H */
