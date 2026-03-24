@@ -321,21 +321,60 @@ static void virtio_pci_build_config_space(struct virtio_pci_ctx *ctx,
 	le32_t v32;
 	struct virtio_pci_cap cap = { 0 };
 	struct virtio_pci_notify_cap notif = { 0 };
+	uint8_t class_code = 0x00;
+	uint8_t subclass = 0x00;
+
+	/*
+	 * Map Virtio Device IDs to standard PCI Class Codes.
+	 * Virtio ID 1 = Network Card, Virtio ID 2 = Block Device.
+	 */
+	switch (ctx->vdev->device_id) {
+	case 1: /* VIRTIO_ID_NET */
+		class_code = 0x02; /* Network Controller */
+		subclass = 0x00; /* Ethernet Controller */
+		break;
+	case 2: /* VIRTIO_ID_BLOCK */
+		class_code = 0x01; /* Mass Storage Controller */
+		subclass = 0x80; /* Other Mass Storage */
+		break;
+	default:
+		class_code = 0xFF; /* Unclassified Device */
+		subclass = 0xFF;
+		break;
+	}
 
 	/* PCI Header Type 0 */
 	v16 = cpu_to_le16(0x1AF4);
 	memcpy(&cfg[0x00], &v16, 2); /* Vendor: Red Hat */
+
+	/* Virtio 1.0 Spec: Modern PCI Device ID is 0x1040 + Virtio Device ID */
 	v16 = cpu_to_le16(0x1040 + ctx->vdev->device_id);
 	memcpy(&cfg[0x02], &v16, 2);
+
 	v16 = cpu_to_le16(0x0002);
 	memcpy(&cfg[0x04], &v16, 2); /* Command: Memory Space Enable */
+
 	v16 = cpu_to_le16(0x0010);
 	memcpy(&cfg[0x06], &v16, 2); /* Status: Capabilities List */
-	cfg[0x08] = 0x01; /* Revision ID: 1 (Virtio 1.0) */
-	cfg[0x0B] = 0x01; /* Class Code: Mass Storage (simplified) */
+
+	cfg[0x08] = 0x01; /* Revision ID: 1 (Virtio 1.0 Non-transitional) */
+	cfg[0x09] = 0x00; /* Programming Interface */
+	cfg[0x0A] = subclass; /* Subclass Code */
+	cfg[0x0B] = class_code; /* Base Class Code */
 
 	v32 = cpu_to_le32((uint32_t)bar0_base);
 	memcpy(&cfg[0x10], &v32, 4); /* BAR 0 */
+
+	/*
+	 * Virtio 1.0 Spec 4.1.2.1:
+	 * Non-transitional devices MUST have a PCI Subsystem Device ID matching
+	 * the Virtio Device ID.
+	 */
+	v16 = cpu_to_le16(0x1AF4);
+	memcpy(&cfg[0x2C], &v16, 2); /* Subsystem Vendor ID: Red Hat */
+	v16 = cpu_to_le16((uint16_t)ctx->vdev->device_id);
+	memcpy(&cfg[0x2E], &v16, 2); /* Subsystem Device ID */
+
 	cfg[0x34] = 0x40; /* Capabilities Pointer */
 
 	/* Capability 1: Common Configuration */

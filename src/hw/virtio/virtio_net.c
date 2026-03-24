@@ -20,6 +20,7 @@
 
 #define VIRTIO_ID_NET 1
 #define VIRTIO_NET_QUEUE_SIZE 256
+#define VIRTIO_NET_CTRL_QUEUE_SIZE 64
 
 struct virtio_net_ctx {
 	struct virtio_device vdev;
@@ -43,24 +44,27 @@ static int virtio_net_realize(struct virtio_device *vdev)
 	/*
 	 * VQ 0: Receive Queue (Host -> Guest)
 	 * VQ 1: Transmit Queue (Guest -> Host)
+	 * VQ 2: Control Queue (Management plane)
 	 */
 	vdev->vqs[0] =
 		virtqueue_create(&mctx->accel.mem_space, VIRTIO_NET_QUEUE_SIZE);
 	vdev->vqs[1] =
 		virtqueue_create(&mctx->accel.mem_space, VIRTIO_NET_QUEUE_SIZE);
+	vdev->vqs[2] = virtqueue_create(&mctx->accel.mem_space,
+					VIRTIO_NET_CTRL_QUEUE_SIZE);
 
-	if (!vdev->vqs[0] || !vdev->vqs[1])
+	if (!vdev->vqs[0] || !vdev->vqs[1] || !vdev->vqs[2])
 		return -ENOMEM;
 
-	vdev->nr_vqs = 2;
+	vdev->nr_vqs = 3;
 
 	memset(&ctx->config, 0, sizeof(ctx->config));
 	if (ctx->backend && ctx->backend->ops->get_mac)
 		ctx->backend->ops->get_mac(ctx->backend, ctx->config.mac);
 
-	ctx->config.status = (virtio16_t)cpu_to_le16(VIRTIO_NET_S_LINK_UP);
+	/* Enforce strict little-endian assignment for configuration space */
+	ctx->config.status = cpu_to_le16(VIRTIO_NET_S_LINK_UP);
 
-	/* Bind the asynchronous host reception event to the Virtio-Net context */
 	if (ctx->backend && ctx->backend->ops->set_rx_cb)
 		ctx->backend->ops->set_rx_cb(ctx->backend, &mctx->event_loop,
 					     virtio_net_rx_cb, ctx);
@@ -102,7 +106,9 @@ static void virtio_net_unrealize(struct virtio_device *vdev)
 static uint64_t virtio_net_get_features(struct virtio_device *vdev)
 {
 	(void)vdev;
-	return (1ULL << VIRTIO_NET_F_MAC) | (1ULL << VIRTIO_NET_F_STATUS);
+	return (1ULL << VIRTIO_NET_F_MAC) | (1ULL << VIRTIO_NET_F_STATUS) |
+	       (1ULL << VIRTIO_NET_F_CTRL_VQ) |
+	       (1ULL << VIRTIO_NET_F_CTRL_MAC_ADDR);
 }
 
 static uint64_t virtio_net_read_config(struct virtio_device *vdev,
@@ -119,12 +125,68 @@ static uint64_t virtio_net_read_config(struct virtio_device *vdev,
 }
 
 /**
- * virtio_net_notify_queue - process outgoing network frames (TX)
+ * virtio_net_handle_ctrl - process management plane commands
+ * @vdev: the base virtio device pointer
+ * @vq: the control virtqueue instance
+ */
+static void virtio_net_handle_ctrl(struct virtio_device *vdev,
+				   struct virtqueue *vq)
+{
+	struct virtio_net_ctx *ctx = vdev->priv;
+	struct virtqueue_buf bufs[32];
+	uint16_t desc_idx;
+	int num_bufs;
+	bool need_irq = false;
+
+	while ((num_bufs = virtqueue_pop(vq, &desc_idx, bufs, 32)) > 0) {
+		struct virtio_net_ctrl_hdr *ctrl;
+		uint8_t *status;
+
+		/* Minimal valid chain: Header -> [Data...] -> Status (Ack) */
+		if (unlikely(num_bufs < 2 || !bufs[num_bufs - 1].is_write)) {
+			virtqueue_push(vq, desc_idx, 0);
+			need_irq = true;
+			continue;
+		}
+
+		ctrl = bufs[0].hva;
+		status = bufs[num_bufs - 1].hva;
+		*status = VIRTIO_NET_ERR;
+
+		if (unlikely(bufs[0].len < sizeof(*ctrl)))
+			goto push_desc;
+
+		if (ctrl->class == VIRTIO_NET_CTRL_MAC) {
+			if (ctrl->cmd == VIRTIO_NET_CTRL_MAC_ADDR_SET) {
+				if (num_bufs >= 3 && bufs[1].len >= 6) {
+					memcpy(ctx->config.mac, bufs[1].hva, 6);
+					*status = VIRTIO_NET_OK;
+					pr_debug(
+						"guest dynamically updated MAC address\n");
+				}
+			} else if (ctrl->cmd == VIRTIO_NET_CTRL_MAC_TABLE_SET) {
+				/* Silently accept multicast table updates */
+				*status = VIRTIO_NET_OK;
+			}
+		} else if (ctrl->class == VIRTIO_NET_CTRL_RX) {
+			/* Silently accept promiscuous mode changes (ignored by TAP) */
+			*status = VIRTIO_NET_OK;
+		}
+
+push_desc:
+		/* Notify guest that 1 byte (the status ack) was written */
+		virtqueue_push(vq, desc_idx, 1);
+		need_irq = true;
+	}
+
+	if (likely(need_irq && vdev->transport && vdev->transport->set_irq_cb))
+		vdev->transport->set_irq_cb(vdev->transport_data);
+}
+
+/**
+ * virtio_net_notify_queue - process guest doorbell kicks
  * @vdev: the base virtio device pointer
  * @queue_idx: index of the kicked virtqueue
- *
- * Scavenges the transmit queue for guest-provided ethernet frames, strips the
- * Virtio header, and injects the raw payload into the host network stack.
  */
 static void virtio_net_notify_queue(struct virtio_device *vdev,
 				    uint16_t queue_idx)
@@ -137,12 +199,22 @@ static void virtio_net_notify_queue(struct virtio_device *vdev,
 	int num_bufs;
 	bool need_irq = false;
 
-	/* TX operations are exclusively routed to VQ 1 */
-	if (unlikely(queue_idx != 1))
+	if (unlikely(queue_idx >= vdev->nr_vqs))
 		return;
 
 	vq = vdev->vqs[queue_idx];
 
+	/* Route to Control Plane */
+	if (queue_idx == 2) {
+		virtio_net_handle_ctrl(vdev, vq);
+		return;
+	}
+
+	/* Ignore kicks on RX queue (VQ 0) since we process it asynchronously */
+	if (queue_idx == 0)
+		return;
+
+	/* Process Data Plane (TX) */
 	while ((num_bufs = virtqueue_pop(vq, &desc_idx, bufs, 32)) > 0) {
 		size_t hdr_len = sizeof(struct virtio_net_hdr_v1);
 		size_t offset = 0;
@@ -154,7 +226,6 @@ static void virtio_net_notify_queue(struct virtio_device *vdev,
 			size_t chunk = bufs[i].len;
 			uint8_t *hva = bufs[i].hva;
 
-			/* TX buffers must be read-only from the device perspective */
 			if (unlikely(bufs[i].is_write))
 				continue;
 
@@ -212,6 +283,13 @@ static void virtio_net_rx_cb(void *data, const uint8_t *buf, size_t len)
 	int i;
 
 	memset(&hdr, 0, hdr_len);
+
+	/*
+	 * [CRITICAL] Virtio 1.0 Spec requirement:
+	 * If VIRTIO_NET_F_MRG_RXBUF is NOT negotiated, num_buffers MUST be set to 1.
+	 * Using strict little-endian assignment ensures cross-arch compliance.
+	 */
+	hdr.num_buffers = cpu_to_le16(1);
 
 	num_bufs = virtqueue_pop(vq, &desc_idx, bufs, 32);
 	if (unlikely(num_bufs <= 0))

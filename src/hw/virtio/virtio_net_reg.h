@@ -31,6 +31,8 @@
 /* The feature bitmap for virtio net */
 #define VIRTIO_NET_F_MAC 5 /* Host has given MAC address. */
 #define VIRTIO_NET_F_STATUS 16 /* virtio_net_config.status available */
+#define VIRTIO_NET_F_CTRL_VQ 17 /* Control channel available */
+#define VIRTIO_NET_F_CTRL_MAC_ADDR 23 /* Set MAC address */
 
 #define VIRTIO_NET_S_LINK_UP 1 /* Link is up */
 
@@ -86,5 +88,51 @@ struct virtio_net_hdr_v1 {
 	virtio16_t csum_offset;
 	virtio16_t num_buffers; /* Number of merged rx buffers */
 } __packed;
+
+/**
+ * Control virtqueue data structures
+ *
+ * The control virtqueue expects a header in the first sg entry
+ * and an ack/status response in the last entry.  Data for the
+ * command goes in between.
+ */
+struct virtio_net_ctrl_hdr {
+	uint8_t class;
+	uint8_t cmd;
+} __packed;
+
+#define VIRTIO_NET_OK 0
+#define VIRTIO_NET_ERR 1
+
+/*
+ * Control the RX mode, ie. promisucous, allmulti, etc...
+ * All commands require an "out" sg entry containing a 1 byte
+ * state value, zero = disable, non-zero = enable.  Commands
+ * 0 and 1 are supported with the VIRTIO_NET_F_CTRL_RX feature.
+ * Commands 2-5 are added with VIRTIO_NET_F_CTRL_RX_EXTRA.
+ */
+#define VIRTIO_NET_CTRL_RX 0
+#define VIRTIO_NET_CTRL_RX_PROMISC 0
+#define VIRTIO_NET_CTRL_RX_ALLMULTI 1
+
+/*
+ * Control the MAC
+ *
+ * The MAC filter table is not needed
+ *
+ * In addition to the class/cmd header, the TABLE_SET command requires
+ * two out scatterlists.  Each contains a 4 byte count of entries followed
+ * by a concatenated byte stream of the ETH_ALEN MAC addresses.  The
+ * first sg list contains unicast addresses, the second is for multicast.
+ * This functionality is present if the VIRTIO_NET_F_CTRL_RX feature
+ * is available.
+ *
+ * The ADDR_SET command requests one out scatterlist, it contains a
+ * 6 bytes MAC address. This functionality is present if the
+ * VIRTIO_NET_F_CTRL_MAC_ADDR feature is available.
+ */
+#define VIRTIO_NET_CTRL_MAC 1
+#define VIRTIO_NET_CTRL_MAC_TABLE_SET 0
+#define VIRTIO_NET_CTRL_MAC_ADDR_SET 1
 
 #endif /* MODVM_SRC_HW_VIRTIO_NET_REG_H */

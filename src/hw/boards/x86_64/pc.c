@@ -39,6 +39,8 @@ struct pc_irq_route {
 	uint32_t gsi;
 };
 
+static const uint8_t pc_pirq_routing[4] = { 5, 9, 10, 11 };
+
 static void modvm_hw_pc_irq_handler(void *data, int level)
 {
 	struct pc_irq_route *route = data;
@@ -60,8 +62,7 @@ static void modvm_hw_pc_route_pci_irqs(struct modvm_pci_bus *bus)
 
 		if (pin > 0 && pin <= 4) {
 			slot = pos->devfn >> 3;
-			/* Map Slot/Pin to PIRQA-D, which map to GSIs 10-13 */
-			irq_line = 10 + ((slot + pin - 1) % 4);
+			irq_line = pc_pirq_routing[(slot + pin - 1) % 4];
 
 			modvm_pci_bus_write_config(bus, pos->devfn,
 						   PCI_INTERRUPT_LINE, irq_line,
@@ -251,7 +252,7 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 			return -ENOMEM;
 		}
 		route->accel = &ctx->accel;
-		route->gsi = 10 + i;
+		route->gsi = pc_pirq_routing[i];
 		bridge_pdata.pirq[i] = modvm_devm_irq_alloc(
 			pci_bridge, modvm_hw_pc_irq_handler, route);
 		if (!bridge_pdata.pirq[i]) {
