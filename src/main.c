@@ -40,7 +40,7 @@ static void print_usage(const char *prog_name)
 	fprintf(stderr,
 		"  -drive <opts>        attach a host storage backend (e.g., driver=posix-file,path=img.raw)\n");
 	fprintf(stderr,
-		"  -net <opts>          attach a host network backend (e.g., driver=posix-tap,ifname=tap0)\n");
+		"  -net <opts>          attach a host network backend (e.g., driver=linux-tap,ifname=tap0)\n");
 	fprintf(stderr, "  -h                   show this help message\n");
 }
 

@@ -20,24 +20,24 @@
 #include <modvm/utils/compiler.h>
 
 #undef pr_fmt
-#define pr_fmt(fmt) "posix_tap: " fmt
+#define pr_fmt(fmt) "linux_tap: " fmt
 
 #define TAP_MTU_MAX 2048
 
 /**
- * struct modvm_net_posix_ctx - POSIX TAP backend private context
+ * struct modvm_net_linux_ctx - Linux TAP backend private context
  * @fd: file descriptor for the /dev/net/tun interface
  * @mac: locally administered MAC address presented to the guest
  * @loop: ?
  */
-struct modvm_net_posix_ctx {
+struct modvm_net_linux_ctx {
 	int fd;
 	uint8_t mac[6];
 	struct modvm_event_loop *loop;
 };
 
 /**
- * modvm_net_posix_write - push an ethernet frame to the host TAP interface
+ * modvm_net_linux_write - push an ethernet frame to the host TAP interface
  * @net: abstract network backend instance
  * @buf: frame payload
  * @len: payload length
@@ -46,10 +46,10 @@ struct modvm_net_posix_ctx {
  *
  * Return: number of bytes successfully written, or a negative error code.
  */
-static ssize_t modvm_net_posix_write(struct modvm_net *net, const uint8_t *buf,
+static ssize_t modvm_net_linux_write(struct modvm_net *net, const uint8_t *buf,
 				     size_t len)
 {
-	struct modvm_net_posix_ctx *ctx = net->priv;
+	struct modvm_net_linux_ctx *ctx = net->priv;
 	ssize_t ret;
 
 	if (unlikely(len == 0))
@@ -66,7 +66,7 @@ static ssize_t modvm_net_posix_write(struct modvm_net *net, const uint8_t *buf,
 }
 
 /**
- * modvm_net_posix_rx_cb - event loop callback triggered upon host frame arrival
+ * modvm_net_linux_rx_cb - event loop callback triggered upon host frame arrival
  * @fd: the TAP file descriptor
  * @events: poll event bitmask
  * @data: closure payload routing back to the abstract network backend
@@ -74,7 +74,7 @@ static ssize_t modvm_net_posix_write(struct modvm_net *net, const uint8_t *buf,
  * Hot path reception routine. Extracts raw ethernet frames and dispatches
  * them to the frontend device driver (Virtio-Net).
  */
-static void modvm_net_posix_rx_cb(int fd, uint32_t events, void *data)
+static void modvm_net_linux_rx_cb(int fd, uint32_t events, void *data)
 {
 	struct modvm_net *net = data;
 	uint8_t buf[TAP_MTU_MAX];
@@ -91,34 +91,34 @@ static void modvm_net_posix_rx_cb(int fd, uint32_t events, void *data)
 		net->rx_cb(net->rx_data, buf, (size_t)ret);
 }
 
-static void modvm_net_posix_set_rx_cb(struct modvm_net *net,
+static void modvm_net_linux_set_rx_cb(struct modvm_net *net,
 				      struct modvm_event_loop *loop,
 				      modvm_net_rx_cb_t cb, void *data)
 {
-	struct modvm_net_posix_ctx *tctx = net->priv;
+	struct modvm_net_linux_ctx *tctx = net->priv;
 
 	tctx->loop = loop;
 	(void)data;
 
 	if (cb) {
 		modvm_event_loop_add_fd(loop, tctx->fd, MODVM_EVENT_READ,
-					modvm_net_posix_rx_cb, net);
+					modvm_net_linux_rx_cb, net);
 	} else {
 		modvm_event_loop_rm_fd(loop, tctx->fd);
 	}
 }
 
-static int modvm_net_posix_get_mac(struct modvm_net *net, uint8_t mac_out[6])
+static int modvm_net_linux_get_mac(struct modvm_net *net, uint8_t mac_out[6])
 {
-	struct modvm_net_posix_ctx *ctx = net->priv;
+	struct modvm_net_linux_ctx *ctx = net->priv;
 
 	memcpy(mac_out, ctx->mac, 6);
 	return 0;
 }
 
-static void modvm_net_posix_release(struct modvm_net *net)
+static void modvm_net_linux_release(struct modvm_net *net)
 {
-	struct modvm_net_posix_ctx *ctx;
+	struct modvm_net_linux_ctx *ctx;
 
 	if (WARN_ON(!net))
 		return;
@@ -131,15 +131,15 @@ static void modvm_net_posix_release(struct modvm_net *net)
 	free(net);
 }
 
-static const struct modvm_net_ops modvm_net_posix_ops = {
-	.write = modvm_net_posix_write,
-	.set_rx_cb = modvm_net_posix_set_rx_cb,
-	.get_mac = modvm_net_posix_get_mac,
-	.release = modvm_net_posix_release,
+static const struct modvm_net_ops modvm_net_linux_ops = {
+	.write = modvm_net_linux_write,
+	.set_rx_cb = modvm_net_linux_set_rx_cb,
+	.get_mac = modvm_net_linux_get_mac,
+	.release = modvm_net_linux_release,
 };
 
 /**
- * modvm_net_posix_create - instantiate a POSIX TAP interface backend
+ * modvm_net_linux_create - instantiate a Linux TAP interface backend
  * @ifname: requested interface name (e.g., "tap0"), or NULL for auto-allocation
  *
  * Utilizes IFF_NO_PI to strip the legacy 4-byte packet information header,
@@ -147,10 +147,10 @@ static const struct modvm_net_ops modvm_net_posix_ops = {
  *
  * Return: allocated network backend pointer, or NULL on failure.
  */
-static struct modvm_net *modvm_net_posix_create(const char *opts)
+static struct modvm_net *modvm_net_linux_create(const char *opts)
 {
 	struct modvm_net *net;
-	struct modvm_net_posix_ctx *ctx;
+	struct modvm_net_linux_ctx *ctx;
 	struct ifreq ifr;
 	char *ifname;
 	int fd;
@@ -195,8 +195,8 @@ static struct modvm_net *modvm_net_posix_create(const char *opts)
 	ctx->mac[4] = 0x34;
 	ctx->mac[5] = 0x56;
 
-	net->name = "posix-tap";
-	net->ops = &modvm_net_posix_ops;
+	net->name = "linux-tap";
+	net->ops = &modvm_net_linux_ops;
 	net->priv = ctx;
 
 	pr_info("attached to host tap interface '%s'\n", ifr.ifr_name);
@@ -212,12 +212,12 @@ err_free:
 	return NULL;
 }
 
-static const struct modvm_net_driver posix_tap_driver = {
-	.name = "posix-tap",
-	.create = modvm_net_posix_create,
+static const struct modvm_net_driver linux_tap_driver = {
+	.name = "linux-tap",
+	.create = modvm_net_linux_create,
 };
 
-static void __attribute__((constructor)) modvm_net_posix_register(void)
+static void __attribute__((constructor)) modvm_net_linux_register(void)
 {
-	modvm_net_driver_register(&posix_tap_driver);
+	modvm_net_driver_register(&linux_tap_driver);
 }

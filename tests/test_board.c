@@ -69,7 +69,9 @@ static int mock_board_init(struct modvm_ctx *ctx)
 	route->accel = &ctx->accel;
 	route->gsi = 4;
 
+	pdata.bus_type = MODVM_BUS_PIO;
 	pdata.base = 0x3f8;
+	pdata.reg_shift = 0;
 	pdata.console = ctx->config.console;
 	pdata.event_loop = &ctx->event_loop;
 	pdata.irq = modvm_devm_irq_alloc(uart, mock_irq_handler, route);

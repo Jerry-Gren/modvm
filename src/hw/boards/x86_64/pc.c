@@ -162,7 +162,9 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 	route->accel = &ctx->accel;
 	route->gsi = 4;
 
+	uart_pdata.bus_type = MODVM_BUS_PIO;
 	uart_pdata.base = 0x3f8;
+	uart_pdata.reg_shift = 0;
 	uart_pdata.console = ctx->config.console;
 	uart_pdata.event_loop = &ctx->event_loop;
 	uart_pdata.irq =

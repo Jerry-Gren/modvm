@@ -8,6 +8,7 @@
 #include <modvm/core/devm.h>
 #include <modvm/hw/char/serial.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/bug.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/os/thread.h>
@@ -27,6 +28,8 @@
  * @lock: mutex to serialize access from multiple executing processors
  * @irq: hardware interrupt line connection to the system board
  * @console: host character device handling the stream presentation
+ * @event_loop: asynchronous I/O dispatcher reference
+ * @reg_shift: byte shift for register spacing (0 for 8-bit PIO, 2 for 32-bit MMIO aligned)
  * @dll: baud rate divisor register (low byte)
  * @dlm: baud rate divisor register (high byte)
  * @ier: ier register caching enabled logical interrupt sources
@@ -40,11 +43,17 @@
  * @rx_head: write index for rx_fifo
  * @rx_tail: read index for rx_fifo
  * @rx_cnt: current number of bytes in rx_fifo
+ * @backlog_fifo: software buffer to handle host backend bursts
+ * @backlog_head: write index for backlog_fifo
+ * @backlog_tail: read index for backlog_fifo
+ * @backlog_cnt: current number of bytes in backlog_fifo
+ * @rx_paused: backpressure state indicating the host backend is throttled
  * @tx_fifo: 16-byte transmitter ring buffer
  * @tx_head: write index for tx_fifo
  * @tx_tail: read index for tx_fifo
  * @tx_cnt: current number of bytes in tx_fifo
  * @rx_trigger_level: cached interrupt trigger watermark based on FCR
+ * @rx_timeout: FIFO Timeout interrupt pending state
  * @thre_int_pending: internal flip-flop for edge-triggered thre interrupts
  */
 struct uart_16550a_ctx {
@@ -52,6 +61,8 @@ struct uart_16550a_ctx {
 	struct modvm_irq *irq;
 	struct modvm_chardev *console;
 	struct modvm_event_loop *event_loop;
+
+	uint8_t reg_shift;
 
 	uint8_t dll __guarded_by(lock);
 	uint8_t dlm __guarded_by(lock);
@@ -593,22 +604,33 @@ static void uart_16550a_reg_write(struct uart_16550a_ctx *ctx, uint16_t offset,
 	}
 }
 
-static uint64_t uart_bus_read(struct modvm_device *dev, uint64_t addr,
+/**
+ * uart_bus_read - generic read dispatcher resolving dynamic bus shift
+ * @dev: the abstract device
+ * @offset: raw byte offset from the bus
+ * @size: requested access size
+ *
+ * Resolves the physical bus offset to the logical 16550A register index
+ * based on the board-provided reg_shift. Ignores access sizes wider than
+ * 8-bit, zero-extending the response to satisfy MMIO requirements.
+ *
+ * Return: register payload.
+ */
+static uint64_t uart_bus_read(struct modvm_device *dev, uint64_t offset,
 			      uint8_t size)
 {
 	struct uart_16550a_ctx *ctx = dev->priv;
 	uint64_t ret = 0;
-	uint8_t i;
+	uint16_t reg_idx = offset >> ctx->reg_shift;
+
+	(void)size;
 
 	os_mutex_lock(ctx->lock);
 
-	if (addr == UART_RX)
+	if (reg_idx == UART_RX)
 		modvm_irq_set_level(ctx->irq, 0);
 
-	for (i = 0; i < size; i++) {
-		uint8_t reg_val = uart_16550a_reg_read(ctx, addr + i);
-		ret |= ((uint64_t)reg_val << (i * 8));
-	}
+	ret = uart_16550a_reg_read(ctx, reg_idx);
 
 	uart_16550a_irq_update(ctx);
 	uart_16550a_hw_fifo_refill(ctx);
@@ -619,18 +641,27 @@ static uint64_t uart_bus_read(struct modvm_device *dev, uint64_t addr,
 	return ret;
 }
 
-static void uart_bus_write(struct modvm_device *dev, uint64_t addr,
+/**
+ * uart_bus_write - generic write dispatcher resolving dynamic bus shift
+ * @dev: the abstract device
+ * @offset: raw byte offset from the bus
+ * @val: payload from vcpu
+ * @size: requested access size
+ *
+ * Extracts the lowest 8 bits of the payload to write into the targeted
+ * 16550A register, ignoring padding bytes from wide MMIO accesses.
+ */
+static void uart_bus_write(struct modvm_device *dev, uint64_t offset,
 			   uint64_t val, uint8_t size)
 {
 	struct uart_16550a_ctx *ctx = dev->priv;
-	uint8_t i;
+	uint16_t reg_idx = offset >> ctx->reg_shift;
+
+	(void)size;
 
 	os_mutex_lock(ctx->lock);
 
-	for (i = 0; i < size; i++) {
-		uint8_t byte_val = (uint8_t)((val >> (i * 8)) & 0xff);
-		uart_16550a_reg_write(ctx, addr + i, byte_val);
-	}
+	uart_16550a_reg_write(ctx, reg_idx, (uint8_t)(val & 0xff));
 
 	/* writing registers may clear or trigger new interrupts */
 	uart_16550a_irq_update(ctx);
@@ -684,17 +715,21 @@ static void uart_clear_rx_cb(struct modvm_device *dev)
 }
 
 /**
- * uart_instantiate - allocate and register the serial peripheral
- * @dev: the abstract device object assigned by the core framework
- * @pdata: immutable routing configuration
+ * uart_instantiate - dynamically wire the UART to the requested bus
+ * @dev: the abstract device object
+ * @pdata: immutable routing configuration including target bus type
  *
- * return: 0 upon successful initialization, or a negative error code.
+ * Return: 0 upon successful initialization, or a negative error code.
  */
 static int uart_instantiate(struct modvm_device *dev, void *pdata)
 {
 	struct uart_16550a_ctx *ctx;
 	struct modvm_serial_pdata *plat = pdata;
+	uint64_t region_size;
 	int ret;
+
+	if (WARN_ON(!plat || !plat->irq))
+		return -EINVAL;
 
 	ctx = modvm_devm_zalloc(dev, sizeof(*ctx));
 	if (!ctx)
@@ -702,6 +737,8 @@ static int uart_instantiate(struct modvm_device *dev, void *pdata)
 
 	dev->ops = &uart_ops;
 	dev->priv = ctx;
+
+	ctx->reg_shift = plat->reg_shift;
 
 	ctx->lock = os_mutex_create();
 	if (IS_ERR(ctx->lock))
@@ -737,13 +774,17 @@ static int uart_instantiate(struct modvm_device *dev, void *pdata)
 	uart_16550a_msr_update(ctx);
 	ctx->msr &= ~UART_MSR_ANY_DELTA;
 
-	/* Claim the 8 contiguous I/O ports on the motherboard bus */
-	ret = modvm_bus_register_region(MODVM_BUS_PIO, plat->base, 8, dev);
+	/* Dynamically calculate region bounds based on register shift */
+	region_size = 8ULL << ctx->reg_shift;
+
+	ret = modvm_bus_register_region(plat->bus_type, plat->base, region_size,
+					dev);
 	if (ret < 0)
 		return ret;
 
-	pr_info("initialized legacy serial terminal at hardware port 0x%03lx\n",
-		plat->base);
+	pr_info("initialized serial terminal at %s 0x%08lx (shift: %u)\n",
+		plat->bus_type == MODVM_BUS_MMIO ? "mmio" : "pio", plat->base,
+		ctx->reg_shift);
 	return 0;
 }
 

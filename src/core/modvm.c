@@ -120,6 +120,19 @@ int modvm_init(struct modvm_ctx *ctx, const struct modvm_config *config)
 		}
 	}
 
+	/*
+	 * Architectures like ARM64 require vCPUs to be instantiated before
+	 * finalizing the interrupt controller routing (e.g., VGIC redistributors).
+	 */
+	if (ctx->config.board && ctx->config.board->ops &&
+	    ctx->config.board->ops->late_init) {
+		ret = ctx->config.board->ops->late_init(ctx);
+		if (ret < 0) {
+			pr_err("board late initialization hook failed\n");
+			return ret;
+		}
+	}
+
 	pr_info("context assembled with %zu bytes ram and %u vcpus\n",
 		ctx->config.ram_size, ctx->config.nr_vcpus);
 
