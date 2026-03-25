@@ -283,9 +283,7 @@ static void virtio_pci_bar0_write(struct modvm_device *dev, uint64_t offset,
 	}
 
 	if (offset == 0x100) { /* Notify Config Region */
-		le16_t v16;
-		v16.__val = (uint16_t)val;
-		q_sel = le16_to_cpu(v16);
+		q_sel = (uint16_t)val;
 		if (q_sel < vdev->nr_vqs && likely(vdev->ops->notify_queue))
 			vdev->ops->notify_queue(vdev, q_sel);
 		return;
