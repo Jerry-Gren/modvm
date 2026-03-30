@@ -3,7 +3,6 @@
 #define MODVM_HW_VIRTIO_VIRTQUEUE_H
 
 #include <modvm/utils/types.h>
-#include <stdbool.h>
 
 #define VRING_DESC_F_NEXT 1
 #define VRING_DESC_F_WRITE 2
@@ -43,8 +42,8 @@ void virtqueue_destroy(struct virtqueue *vq);
 
 uint16_t virtqueue_get_size(struct virtqueue *vq);
 
-int virtqueue_set_addrs(struct virtqueue *vq, uint64_t desc_gpa,
-			uint64_t avail_gpa, uint64_t used_gpa);
+int virtqueue_set_addrs(struct virtqueue *vq, gpa_t desc_gpa, gpa_t avail_gpa,
+			gpa_t used_gpa);
 int virtqueue_pop(struct virtqueue *vq, uint16_t *out_desc_idx,
 		  struct virtqueue_buf *bufs, int max_bufs);
 void virtqueue_push(struct virtqueue *vq, uint16_t desc_idx, uint32_t len);

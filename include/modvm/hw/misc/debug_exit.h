@@ -2,8 +2,8 @@
 #ifndef MODVM_HW_MISC_DEBUG_EXIT_H
 #define MODVM_HW_MISC_DEBUG_EXIT_H
 
-#include <stdint.h>
 #include <modvm/core/bus.h>
+#include <modvm/utils/types.h>
 
 /**
  * struct modvm_debug_exit_pdata - platform routing data for debug exit device
@@ -12,7 +12,7 @@
  */
 struct modvm_debug_exit_pdata {
 	enum modvm_bus_type bus_type;
-	uint64_t base;
+	gpa_t base;
 };
 
 #endif /* MODVM_HW_MISC_DEBUG_EXIT_H */

@@ -5,6 +5,7 @@
 #include <modvm/core/accel.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/types.h>
 
 #include "internal.h"
 
@@ -115,7 +116,7 @@ int modvm_accel_setup_irqchip(struct modvm_accel *accel)
  *
  * Return: 0 on success, or a negative error code.
  */
-int modvm_accel_set_irq(struct modvm_accel *accel, uint32_t gsi, int level)
+int modvm_accel_set_irq(struct modvm_accel *accel, gsi_t gsi, int level)
 {
 	if (WARN_ON(!accel || !accel->backend))
 		return -EINVAL;
@@ -138,7 +139,7 @@ int modvm_accel_set_irq(struct modvm_accel *accel, uint32_t gsi, int level)
  *
  * Return: 0 on success, or a negative error code.
  */
-int modvm_accel_map_ram(struct modvm_accel *accel, uint64_t gpa, size_t size,
+int modvm_accel_map_ram(struct modvm_accel *accel, gpa_t gpa, size_t size,
 			uint32_t flags)
 {
 	if (WARN_ON(!accel))

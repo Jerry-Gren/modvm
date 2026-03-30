@@ -2,8 +2,8 @@
 #ifndef MODVM_CORE_MEMORY_H
 #define MODVM_CORE_MEMORY_H
 
-#include <stdint.h>
 #include <modvm/utils/list.h>
+#include <modvm/utils/types.h>
 
 #define MODVM_MEM_READONLY (1U << 0)
 #define MODVM_MEM_EXEC (1U << 1)
@@ -41,7 +41,7 @@ typedef void (*modvm_mem_unmap_cb_t)(struct modvm_mem_space *space,
  */
 struct modvm_mem_region {
 	struct list_head node;
-	uint64_t gpa;
+	gpa_t gpa;
 	size_t size;
 	void *hva;
 	uint32_t flags;
@@ -71,8 +71,8 @@ int modvm_mem_space_init(struct modvm_mem_space *space,
 			 modvm_mem_map_cb_t map_cb,
 			 modvm_mem_unmap_cb_t unmap_cb, void *data);
 void modvm_mem_space_destroy(struct modvm_mem_space *space);
-void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, uint64_t gpa);
-void *modvm_mem_gpa_to_hva_clamp(struct modvm_mem_space *space, uint64_t gpa,
+void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, gpa_t gpa);
+void *modvm_mem_gpa_to_hva_clamp(struct modvm_mem_space *space, gpa_t gpa,
 				 size_t len, size_t *out_len);
 
 #endif /* MODVM_CORE_MEMORY_H */

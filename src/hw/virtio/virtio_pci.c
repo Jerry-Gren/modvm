@@ -13,6 +13,7 @@
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/types.h>
 
 #include "virtqueue.h"
 #include "virtio_pci_reg.h"
@@ -261,8 +262,9 @@ static void virtio_pci_bar0_write(struct modvm_device *dev, uint64_t offset,
 				 << 32) |
 				le32_to_cpu(ctx->common_cfg.queue_used_lo);
 
-			if (virtqueue_set_addrs(vdev->vqs[q_sel], desc_gpa,
-						avail_gpa, used_gpa) == 0)
+			if (virtqueue_set_addrs(
+				    vdev->vqs[q_sel], TO_GPA(desc_gpa),
+				    TO_GPA(avail_gpa), TO_GPA(used_gpa)) == 0)
 				ctx->queue_ready[q_sel] = true;
 			return;
 		}
@@ -312,7 +314,7 @@ static const struct modvm_pci_device_ops virtio_pci_config_ops = {
  * @bar0_base: hardware assigned MMIO base address
  */
 static void virtio_pci_build_config_space(struct virtio_pci_ctx *ctx,
-					  uint64_t bar0_base)
+					  gpa_t bar0_base)
 {
 	uint8_t *cfg = ctx->pci_dev.config_space;
 	le16_t v16;
@@ -360,9 +362,8 @@ static void virtio_pci_build_config_space(struct virtio_pci_ctx *ctx,
 	cfg[0x0A] = subclass; /* Subclass Code */
 	cfg[0x0B] = class_code; /* Base Class Code */
 
-	v32 = cpu_to_le32((uint32_t)bar0_base);
+	v32 = cpu_to_le32((uint32_t)GPA_VAL(bar0_base));
 	memcpy(&cfg[0x10], &v32, 4); /* BAR 0 */
-
 	/*
 	 * Virtio 1.0 Spec 4.1.2.1:
 	 * Non-transitional devices MUST have a PCI Subsystem Device ID matching
@@ -437,10 +438,10 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 	ctx->vdev = vdev;
 	ctx->bar0_size = (uint32_t)os_page_size();
 
-	if (plat->bar0_base == PCI_AUTO_MMIO) {
+	if (!GPA_IS_VALID(plat->bar0_base)) {
 		plat->bar0_base =
 			modvm_pci_bus_alloc_mmio(plat->pci_bus, ctx->bar0_size);
-		if (!plat->bar0_base) {
+		if (!GPA_IS_VALID(plat->bar0_base)) {
 			pr_err("failed to allocate mmio window for virtio-pci device\n");
 			return -ENOSPC;
 		}
@@ -478,8 +479,9 @@ static int virtio_pci_instantiate(struct modvm_device *dev, void *pdata)
 	if (ret < 0)
 		return ret;
 
-	pr_info("virtio-pci transport attached at devfn %u for device %u\n",
-		plat->devfn, vdev->device_id);
+	pr_info("virtio-pci transport attached at devfn %u for device %u (BAR0: 0x%llx)\n",
+		PCI_DEVFN_VAL(plat->devfn), vdev->device_id,
+		(unsigned long long)GPA_VAL(plat->bar0_base));
 	return 0;
 }
 

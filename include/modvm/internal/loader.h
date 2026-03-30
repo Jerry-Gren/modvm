@@ -2,7 +2,7 @@
 #ifndef MODVM_INTERNAL_LOADER_H
 #define MODVM_INTERNAL_LOADER_H
 
-#include <stdint.h>
+#include <modvm/utils/types.h>
 
 struct modvm_mem_space;
 
@@ -13,6 +13,6 @@ struct modvm_mem_space;
  */
 
 int modvm_loader_load_raw(struct modvm_mem_space *space, const char *path,
-			  uint64_t gpa);
+			  gpa_t gpa);
 
 #endif /* MODVM_INTERNAL_LOADER_H */

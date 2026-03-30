@@ -14,6 +14,7 @@
 #include <modvm/utils/log.h>
 #include <modvm/os/thread.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/types.h>
 
 #include <modvm/internal/thread.h>
 
@@ -32,18 +33,20 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 {
 	struct modvm_kvm_vcpu_state *vcpu_state;
 	struct modvm_kvm_state *state = vcpu->accel->priv;
+	int raw_fd;
 	int ret;
 
 	vcpu_state = calloc(1, sizeof(*vcpu_state));
 	if (!vcpu_state)
 		return -ENOMEM;
 
-	vcpu_state->vcpu_fd = ioctl(state->vm_fd, KVM_CREATE_VCPU, vcpu->id);
-	if (vcpu_state->vcpu_fd < 0) {
+	raw_fd = ioctl(FD_VAL(state->vm_fd), KVM_CREATE_VCPU, vcpu->id);
+	if (raw_fd < 0) {
 		pr_err("failed to instantiate hardware vcpu %d\n", vcpu->id);
 		ret = -errno;
 		goto err_free_state;
 	}
+	vcpu_state->vcpu_fd = TO_VCPU_FD(raw_fd);
 
 	/* Assign early so architecture hooks can access the specific state */
 	vcpu->priv = vcpu_state;
@@ -51,8 +54,8 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 	ret = modvm_kvm_arch_vcpu_init(vcpu);
 	if (ret < 0)
 		goto err_close_fd;
-
-	vcpu_state->run_size = ioctl(state->kvm_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
+	vcpu_state->run_size =
+		ioctl(FD_VAL(state->kvm_fd), KVM_GET_VCPU_MMAP_SIZE, 0);
 	if (vcpu_state->run_size < 0) {
 		pr_err("failed to probe vcpu mmap size\n");
 		ret = -errno;
@@ -61,7 +64,7 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 
 	vcpu_state->run = mmap(NULL, (size_t)vcpu_state->run_size,
 			       PROT_READ | PROT_WRITE, MAP_SHARED,
-			       vcpu_state->vcpu_fd, 0);
+			       FD_VAL(vcpu_state->vcpu_fd), 0);
 	if (vcpu_state->run == MAP_FAILED) {
 		pr_err("failed to map hypervisor communication window\n");
 		ret = -errno;
@@ -72,7 +75,7 @@ static int kvm_vcpu_init(struct modvm_vcpu *vcpu)
 	return 0;
 
 err_close_fd:
-	close(vcpu_state->vcpu_fd);
+	close(FD_VAL(vcpu_state->vcpu_fd));
 err_free_state:
 	free(vcpu_state);
 	vcpu->priv = NULL;
@@ -115,7 +118,7 @@ static void modvm_kvm_vcpu_handle_mmio_exit(struct modvm_vcpu *vcpu)
 	struct kvm_run *run = state->run;
 	struct modvm_bus *bus = vcpu->accel->bus;
 
-	uint64_t gpa = run->mmio.phys_addr;
+	gpa_t gpa = TO_GPA(run->mmio.phys_addr);
 	uint8_t size = run->mmio.len;
 	uint8_t *data = run->mmio.data;
 	uint64_t val = 0;
@@ -148,7 +151,7 @@ static int kvm_vcpu_setup_sigmask(struct modvm_kvm_vcpu_state *state)
 		return ret;
 	}
 
-	ret = ioctl(state->vcpu_fd, KVM_SET_SIGNAL_MASK, kvm_mask);
+	ret = ioctl(FD_VAL(state->vcpu_fd), KVM_SET_SIGNAL_MASK, kvm_mask);
 	free(kvm_mask);
 
 	if (ret < 0) {
@@ -186,7 +189,7 @@ static int kvm_vcpu_run(struct modvm_vcpu *vcpu)
 		if (unlikely(!atomic_load(&vcpu->accel->is_running)))
 			return 0;
 
-		ret = ioctl(state->vcpu_fd, KVM_RUN, 0);
+		ret = ioctl(FD_VAL(state->vcpu_fd), KVM_RUN, 0);
 		if (unlikely(ret < 0)) {
 			if (likely(errno == EINTR || errno == EAGAIN))
 				continue;
@@ -232,8 +235,8 @@ static void kvm_vcpu_destroy(struct modvm_vcpu *vcpu)
 
 	if (state->run)
 		munmap(state->run, (size_t)state->run_size);
-	if (state->vcpu_fd >= 0)
-		close(state->vcpu_fd);
+	if (IS_VALID_FD(state->vcpu_fd))
+		close(FD_VAL(state->vcpu_fd));
 
 	free(state);
 }

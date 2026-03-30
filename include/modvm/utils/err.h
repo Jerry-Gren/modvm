@@ -2,7 +2,6 @@
 #ifndef MODVM_ERR_H
 #define MODVM_ERR_H
 
-#include <stdint.h>
 #include <stdbool.h>
 #include <modvm/utils/compiler.h>
 

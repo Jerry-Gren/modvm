@@ -21,6 +21,7 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/types.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "pc_board: " fmt
@@ -44,7 +45,7 @@ static const uint8_t pc_pirq_routing[4] = { 5, 9, 10, 11 };
 static void modvm_hw_pc_irq_handler(void *data, int level)
 {
 	struct pc_irq_route *route = data;
-	modvm_accel_set_irq(route->accel, route->gsi, level);
+	modvm_accel_set_irq(route->accel, TO_GSI(route->gsi), level);
 }
 
 static void modvm_hw_pc_route_pci_irqs(struct modvm_pci_bus *bus)
@@ -61,7 +62,7 @@ static void modvm_hw_pc_route_pci_irqs(struct modvm_pci_bus *bus)
 						PCI_INTERRUPT_PIN, 1);
 
 		if (pin > 0 && pin <= 4) {
-			slot = pos->devfn >> 3;
+			slot = PCI_SLOT(pos->devfn);
 			irq_line = pc_pirq_routing[(slot + pin - 1) % 4];
 
 			modvm_pci_bus_write_config(bus, pos->devfn,
@@ -69,7 +70,7 @@ static void modvm_hw_pc_route_pci_irqs(struct modvm_pci_bus *bus)
 						   1);
 
 			pr_info("firmware routed devfn %u pin %u -> GSI %u\n",
-				pos->devfn, pin, irq_line);
+				PCI_DEVFN_VAL(pos->devfn), pin, irq_line);
 		}
 	}
 }
@@ -189,13 +190,13 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 		low_ram = ram_size;
 	}
 
-	ret = modvm_accel_map_ram(&ctx->accel, 0x00000000, low_ram,
+	ret = modvm_accel_map_ram(&ctx->accel, TO_GPA(0x00000000), low_ram,
 				  MODVM_MEM_EXEC);
 	if (ret < 0)
 		return ret;
 
 	if (high_ram > 0) {
-		ret = modvm_accel_map_ram(&ctx->accel, PC_HIGH_RAM_BASE,
+		ret = modvm_accel_map_ram(&ctx->accel, TO_GPA(PC_HIGH_RAM_BASE),
 					  high_ram, MODVM_MEM_EXEC);
 		if (ret < 0)
 			return ret;
@@ -218,7 +219,7 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 	route->gsi = 4;
 
 	uart_pdata.bus_type = MODVM_BUS_PIO;
-	uart_pdata.base = 0x3f8;
+	uart_pdata.base = TO_GPA(0x3f8);
 	uart_pdata.reg_shift = 0;
 	uart_pdata.console = ctx->config.console;
 	uart_pdata.event_loop = &ctx->event_loop;
@@ -239,9 +240,9 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 	if (!pci_bridge)
 		return -ENOMEM;
 
-	bridge_pdata.config_addr_port = 0xCF8;
-	bridge_pdata.config_data_port = 0xCFC;
-	bridge_pdata.mmio_base = PC_LOW_RAM_MAX;
+	bridge_pdata.config_addr_port = TO_GPA(0xCF8);
+	bridge_pdata.config_data_port = TO_GPA(0xCFC);
+	bridge_pdata.mmio_base = TO_GPA(PC_LOW_RAM_MAX);
 	bridge_pdata.mmio_size = PC_HIGH_RAM_BASE - PC_LOW_RAM_MAX;
 	bridge_pdata.out_bus = &pci_root_bus;
 
@@ -295,7 +296,7 @@ static int modvm_hw_pc_init(struct modvm_ctx *ctx)
 		return -ENOMEM;
 
 	exit_pdata.bus_type = MODVM_BUS_PIO;
-	exit_pdata.base = 0x500;
+	exit_pdata.base = TO_GPA(0x500);
 
 	ret = modvm_device_add(exit_dev, &exit_pdata);
 	if (ret < 0) {

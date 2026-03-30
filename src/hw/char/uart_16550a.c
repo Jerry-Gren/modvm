@@ -782,9 +782,9 @@ static int uart_instantiate(struct modvm_device *dev, void *pdata)
 	if (ret < 0)
 		return ret;
 
-	pr_info("initialized serial terminal at %s 0x%08lx (shift: %u)\n",
-		plat->bus_type == MODVM_BUS_MMIO ? "mmio" : "pio", plat->base,
-		ctx->reg_shift);
+	pr_info("initialized serial terminal at %s 0x%08llx (shift: %u)\n",
+		plat->bus_type == MODVM_BUS_MMIO ? "mmio" : "pio",
+		(unsigned long long)GPA_VAL(plat->base), ctx->reg_shift);
 	return 0;
 }
 

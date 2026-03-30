@@ -8,6 +8,7 @@
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/bug.h>
 #include <modvm/utils/err.h>
+#include <modvm/utils/types.h>
 
 #include "virtqueue.h"
 
@@ -102,8 +103,8 @@ uint16_t virtqueue_get_size(struct virtqueue *vq)
  *
  * Return: 0 on success, or a negative error code.
  */
-int virtqueue_set_addrs(struct virtqueue *vq, uint64_t desc_gpa,
-			uint64_t avail_gpa, uint64_t used_gpa)
+int virtqueue_set_addrs(struct virtqueue *vq, gpa_t desc_gpa, gpa_t avail_gpa,
+			gpa_t used_gpa)
 {
 	if (WARN_ON(!vq))
 		return -EINVAL;
@@ -159,7 +160,7 @@ int virtqueue_pop(struct virtqueue *vq, uint16_t *out_desc_idx,
 
 	do {
 		struct vring_desc *desc = &vq->desc_table[current_idx];
-		uint64_t gpa = le64_to_cpu(desc->addr);
+		gpa_t gpa = TO_GPA(le64_to_cpu(desc->addr));
 		uint32_t len = le32_to_cpu(desc->len);
 		bool is_write =
 			(le16_to_cpu(desc->flags) & VRING_DESC_F_WRITE) != 0;
@@ -179,8 +180,8 @@ int virtqueue_pop(struct virtqueue *vq, uint16_t *out_desc_idx,
 			hva = modvm_mem_gpa_to_hva_clamp(vq->mem, gpa, len,
 							 &chunk_len);
 			if (unlikely(!hva)) {
-				pr_err("virtio trap: malicious or unmapped gpa 0x%lx\n",
-				       gpa);
+				pr_err("virtio trap: malicious or unmapped gpa 0x%llx\n",
+				       (unsigned long long)GPA_VAL(gpa));
 				return -EFAULT;
 			}
 
@@ -189,7 +190,7 @@ int virtqueue_pop(struct virtqueue *vq, uint16_t *out_desc_idx,
 			bufs[num_bufs].is_write = is_write;
 			num_bufs++;
 
-			gpa += chunk_len;
+			gpa = gpa_add(gpa, chunk_len);
 			len -= chunk_len;
 		}
 

@@ -9,6 +9,7 @@
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/types.h>
 
 #include "virtqueue.h"
 #include "virtio_mmio_reg.h"
@@ -179,8 +180,9 @@ static void virtio_mmio_write(struct modvm_device *dev, uint64_t offset,
 			used_gpa = ((uint64_t)ctx->queue_used_hi[q_sel] << 32) |
 				   ctx->queue_used_lo[q_sel];
 
-			if (virtqueue_set_addrs(vdev->vqs[q_sel], desc_gpa,
-						avail_gpa, used_gpa) == 0)
+			if (virtqueue_set_addrs(
+				    vdev->vqs[q_sel], TO_GPA(desc_gpa),
+				    TO_GPA(avail_gpa), TO_GPA(used_gpa)) == 0)
 				ctx->queue_ready[q_sel] = true;
 		}
 		break;
@@ -253,8 +255,8 @@ static int virtio_mmio_instantiate(struct modvm_device *dev, void *pdata)
 	if (ret < 0)
 		return ret;
 
-	pr_info("virtio-mmio transport mapped at 0x%08lx for device %u\n",
-		plat->base, vdev->device_id);
+	pr_info("virtio-mmio transport mapped at 0x%08llx for device %u\n",
+		(unsigned long long)GPA_VAL(plat->base), vdev->device_id);
 	return 0;
 }
 

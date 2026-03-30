@@ -35,8 +35,8 @@ enum modvm_log_level {
 int modvm_log_initialize(void);
 void modvm_log_destroy(void);
 
-int modvm_log(enum modvm_log_level level, const char *fmt, ...);
-void modvm_panic(const char *fmt, ...) __noreturn __cold;
+int modvm_log(enum modvm_log_level level, const char *fmt, ...) __printf(2, 3);
+void modvm_panic(const char *fmt, ...) __printf(1, 2) __noreturn __cold;
 
 /**
  * pr_emerg - print an emergency-level message

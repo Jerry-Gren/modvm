@@ -12,6 +12,7 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/compiler.h>
 #include <modvm/utils/cmdline.h>
+#include <modvm/utils/types.h>
 
 #include <modvm/internal/loader.h>
 
@@ -180,10 +181,12 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 		goto err_close_kernel;
 	}
 
-	hva_zero_page =
-		modvm_mem_gpa_to_hva(&ctx->accel.mem_space, ZERO_PAGE_GPA);
-	hva_kernel = modvm_mem_gpa_to_hva(&ctx->accel.mem_space, KERNEL_GPA);
-	hva_cmdline = modvm_mem_gpa_to_hva(&ctx->accel.mem_space, CMDLINE_GPA);
+	hva_zero_page = modvm_mem_gpa_to_hva(&ctx->accel.mem_space,
+					     TO_GPA(ZERO_PAGE_GPA));
+	hva_kernel =
+		modvm_mem_gpa_to_hva(&ctx->accel.mem_space, TO_GPA(KERNEL_GPA));
+	hva_cmdline = modvm_mem_gpa_to_hva(&ctx->accel.mem_space,
+					   TO_GPA(CMDLINE_GPA));
 
 	if (!hva_zero_page || !hva_kernel || !hva_cmdline) {
 		pr_err("failed to resolve guest physical memory for Linux injection\n");
@@ -248,7 +251,7 @@ static int linux_loader_load(struct modvm_ctx *ctx, const char *opts,
 			}
 
 			hva_initrd = modvm_mem_gpa_to_hva(&ctx->accel.mem_space,
-							  initrd_gpa);
+							  TO_GPA(initrd_gpa));
 			if (!hva_initrd) {
 				pr_err("failed to resolve guest memory for initrd\n");
 				ret = -EFAULT;

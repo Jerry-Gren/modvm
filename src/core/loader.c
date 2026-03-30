@@ -7,6 +7,7 @@
 #include <modvm/core/ctxm.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/types.h>
 
 #include <modvm/internal/loader.h>
 
@@ -140,7 +141,7 @@ int modvm_loader_execute(struct modvm_ctx *ctx, const char *name,
  * Return: 0 on success, or a negative error code.
  */
 int modvm_loader_load_raw(struct modvm_mem_space *space, const char *path,
-			  uint64_t gpa)
+			  gpa_t gpa)
 {
 	FILE *fp;
 	long size;
@@ -174,7 +175,8 @@ int modvm_loader_load_raw(struct modvm_mem_space *space, const char *path,
 
 	hva = modvm_mem_gpa_to_hva(space, gpa);
 	if (!hva) {
-		pr_err("address translation trap: unmapped gpa 0x%lx\n", gpa);
+		pr_err("address translation trap: unmapped gpa 0x%llx\n",
+		       (unsigned long long)GPA_VAL(gpa));
 		fclose(fp);
 		return -EFAULT;
 	}
@@ -187,8 +189,8 @@ int modvm_loader_load_raw(struct modvm_mem_space *space, const char *path,
 		return -EIO;
 	}
 
-	pr_info("successfully streamed %zu bytes from '%s' to gpa 0x%08lx\n",
-		read_len, path, gpa);
+	pr_info("successfully streamed %zu bytes from '%s' to gpa 0x%08llx\n",
+		read_len, path, (unsigned long long)GPA_VAL(gpa));
 
 	fclose(fp);
 	return 0;

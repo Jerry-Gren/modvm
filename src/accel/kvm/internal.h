@@ -5,6 +5,34 @@
 #include <linux/kvm.h>
 #include <modvm/core/vcpu.h>
 
+/* KVM-Specific Typing */
+typedef struct {
+	int __fd;
+} kvm_fd_t;
+typedef struct {
+	int __fd;
+} vm_fd_t;
+typedef struct {
+	int __fd;
+} vcpu_fd_t;
+typedef struct {
+	uint32_t __val;
+} mem_slot_t;
+
+#define TO_KVM_FD(x) ((kvm_fd_t){ (int)(x) })
+#define TO_VM_FD(x) ((vm_fd_t){ (int)(x) })
+#define TO_VCPU_FD(x) ((vcpu_fd_t){ (int)(x) })
+#define TO_MEM_SLOT(x) ((mem_slot_t){ (uint32_t)(x) })
+
+#define FD_VAL(x) ((x).__fd)
+#define MEM_SLOT_VAL(x) ((x).__val)
+
+#define INVALID_KVM_FD TO_KVM_FD(-1)
+#define INVALID_VM_FD TO_VM_FD(-1)
+#define INVALID_VCPU_FD TO_VCPU_FD(-1)
+
+#define IS_VALID_FD(x) (FD_VAL(x) >= 0)
+
 /**
  * struct modvm_kvm_state - KVM specific virtual machine acceleration state
  * @kvm_fd: global handle to the hypervisor character device
@@ -12,9 +40,9 @@
  * @mem_slot_idx: counter for allocating sequential hardware memory slots
  */
 struct modvm_kvm_state {
-	int kvm_fd;
-	int vm_fd;
-	int mem_slot_idx;
+	kvm_fd_t kvm_fd;
+	vm_fd_t vm_fd;
+	mem_slot_t mem_slot_idx;
 };
 
 /**
@@ -24,7 +52,7 @@ struct modvm_kvm_state {
  * @run: shared memory region for hypervisor communication
  */
 struct modvm_kvm_vcpu_state {
-	int vcpu_fd;
+	vcpu_fd_t vcpu_fd;
 	int run_size;
 	struct kvm_run *run;
 };

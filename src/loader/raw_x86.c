@@ -24,7 +24,9 @@ static int raw_loader_load(struct modvm_ctx *ctx, const char *opts,
 
 	*out_priv = NULL; /* No state needed */
 
-	return modvm_loader_load_raw(&ctx->accel.mem_space, opts, 0x0000);
+	return modvm_loader_load_raw(&ctx->accel.mem_space, opts,
+				     TO_GPA(0x0000));
+	;
 }
 
 static int raw_loader_setup_bsp(struct modvm_vcpu *vcpu, void *priv)

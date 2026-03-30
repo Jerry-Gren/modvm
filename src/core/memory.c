@@ -9,6 +9,7 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/err.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/types.h>
 
 #include "internal.h"
 
@@ -50,10 +51,11 @@ int modvm_mem_space_init(struct modvm_mem_space *space,
  *
  * Return: true if overlapping, false otherwise.
  */
-static bool modvm_mem_region_is_overlap(uint64_t base1, size_t size1,
-					uint64_t base2, size_t size2)
+static bool modvm_mem_region_is_overlap(gpa_t base1, size_t size1, gpa_t base2,
+					size_t size2)
 {
-	return (base1 < base2 + size2) && (base2 < base1 + size1);
+	return GPA_CMP(base1, <, gpa_add(base2, size2)) &&
+	       GPA_CMP(base2, <, gpa_add(base1, size1));
 }
 
 /**
@@ -68,8 +70,8 @@ static bool modvm_mem_region_is_overlap(uint64_t base1, size_t size1,
  *
  * Return: 0 on success, negative error code on conflict or exhaustion.
  */
-int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
-			 size_t size, uint32_t flags)
+int modvm_mem_region_add(struct modvm_mem_space *space, gpa_t gpa, size_t size,
+			 uint32_t flags)
 {
 	struct modvm_mem_region *reg;
 	struct modvm_mem_region *pos;
@@ -78,16 +80,17 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	if (WARN_ON(!space || size == 0))
 		return -EINVAL;
 
-	if (UINT64_MAX - gpa < size) {
-		pr_err("memory region 0x%lx + size 0x%zx wraps around address limit\n",
-		       gpa, size);
+	if (UINT64_MAX - GPA_VAL(gpa) < size) {
+		pr_err("memory region 0x%llx + size 0x%zx wraps around address limit\n",
+		       (unsigned long long)GPA_VAL(gpa), size);
 		return -EOVERFLOW;
 	}
 
-	if (gpa % space->host_page_size != 0 ||
+	if (GPA_VAL(gpa) % space->host_page_size != 0 ||
 	    size % space->host_page_size != 0) {
-		pr_err("region (gpa 0x%lx, size 0x%zx) strictly requires %zu bytes alignment\n",
-		       gpa, size, space->host_page_size);
+		pr_err("region (gpa 0x%llx, size 0x%zx) strictly requires %zu bytes alignment\n",
+		       (unsigned long long)GPA_VAL(gpa), size,
+		       space->host_page_size);
 		return -EINVAL;
 	}
 
@@ -95,7 +98,8 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	{
 		if (modvm_mem_region_is_overlap(gpa, size, pos->gpa,
 						pos->size)) {
-			pr_err("topology overlap detected at gpa 0x%lx\n", gpa);
+			pr_err("topology overlap detected at gpa 0x%llx\n",
+			       (unsigned long long)GPA_VAL(gpa));
 			return -EBUSY;
 		}
 	}
@@ -107,8 +111,8 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	reg->hva = os_page_alloc(size);
 	if (IS_ERR(reg->hva)) {
 		ret = PTR_ERR(reg->hva);
-		pr_err("failed to allocate host backing memory for gpa 0x%lx\n",
-		       gpa);
+		pr_err("failed to allocate host backing memory for gpa 0x%llx\n",
+		       (unsigned long long)GPA_VAL(gpa));
 		free(reg);
 		return ret;
 	}
@@ -127,8 +131,8 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	if (space->map_cb) {
 		ret = space->map_cb(space, reg, space->map_data);
 		if (ret != 0) {
-			pr_err("hypervisor backend actively rejected mapping for gpa 0x%lx\n",
-			       gpa);
+			pr_err("hypervisor backend actively rejected mapping for gpa 0x%llx\n",
+			       (unsigned long long)GPA_VAL(gpa));
 			os_page_free(reg->hva, reg->size);
 			free(reg);
 			return ret;
@@ -138,8 +142,10 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
 	list_add_tail(&reg->node, &space->regions);
 	space->total_ram += size;
 
-	pr_debug("mounted hardware ram: 0x%08lx - 0x%08lx (%zu MB)\n", gpa,
-		 gpa + size - 1, size / (1024 * 1024));
+	pr_debug("mounted hardware ram: 0x%08llx - 0x%08llx (%zu MB)\n",
+		 (unsigned long long)GPA_VAL(gpa),
+		 (unsigned long long)(GPA_VAL(gpa) + size - 1),
+		 size / (1024 * 1024));
 
 	return 0;
 }
@@ -154,7 +160,7 @@ int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
  *
  * Return: host virtual address pointer, or NULL if out of bounds.
  */
-void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, uint64_t gpa)
+void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, gpa_t gpa)
 {
 	struct modvm_mem_region *pos;
 
@@ -163,8 +169,9 @@ void *modvm_mem_gpa_to_hva(struct modvm_mem_space *space, uint64_t gpa)
 
 	list_for_each_entry(pos, &space->regions, node)
 	{
-		if (gpa >= pos->gpa && gpa < pos->gpa + pos->size) {
-			uint64_t offset = gpa - pos->gpa;
+		if (GPA_CMP(gpa, >=, pos->gpa) &&
+		    GPA_CMP(gpa, <, gpa_add(pos->gpa, pos->size))) {
+			uint64_t offset = gpa_offset(gpa, pos->gpa);
 			return (uint8_t *)pos->hva + offset;
 		}
 	}
@@ -211,7 +218,7 @@ void modvm_mem_space_destroy(struct modvm_mem_space *space)
  *
  * Return: host virtual address pointer, or NULL if unmapped.
  */
-void *modvm_mem_gpa_to_hva_clamp(struct modvm_mem_space *space, uint64_t gpa,
+void *modvm_mem_gpa_to_hva_clamp(struct modvm_mem_space *space, gpa_t gpa,
 				 size_t len, size_t *out_len)
 {
 	struct modvm_mem_region *pos;
@@ -221,8 +228,9 @@ void *modvm_mem_gpa_to_hva_clamp(struct modvm_mem_space *space, uint64_t gpa,
 
 	list_for_each_entry(pos, &space->regions, node)
 	{
-		if (gpa >= pos->gpa && gpa < pos->gpa + pos->size) {
-			uint64_t offset = gpa - pos->gpa;
+		if (GPA_CMP(gpa, >=, pos->gpa) &&
+		    GPA_CMP(gpa, <, gpa_add(pos->gpa, pos->size))) {
+			uint64_t offset = gpa_offset(gpa, pos->gpa);
 			size_t avail = pos->size - offset;
 
 			*out_len = (len < avail) ? len : avail;

@@ -4,6 +4,7 @@
 
 #include <modvm/core/memory.h>
 #include <modvm/core/res_pool.h>
+#include <modvm/utils/types.h>
 
 /*
  * Core Subsystem Internal APIs
@@ -12,8 +13,8 @@
  * Device models, board topologies, and loaders MUST NOT use them directly.
  */
 
-int modvm_mem_region_add(struct modvm_mem_space *space, uint64_t gpa,
-			 size_t size, uint32_t flags);
+int modvm_mem_region_add(struct modvm_mem_space *space, gpa_t gpa, size_t size,
+			 uint32_t flags);
 
 void *modvm_res_alloc(modvm_res_release_cb_t release, size_t size);
 void modvm_res_add(struct modvm_res_pool *pool, void *res);

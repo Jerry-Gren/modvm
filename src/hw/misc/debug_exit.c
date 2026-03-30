@@ -62,8 +62,9 @@ static int debug_exit_instantiate(struct modvm_device *dev, void *pdata)
 	if (ret < 0)
 		return ret;
 
-	pr_info("debug exit device attached to %s bus at 0x%08lx\n",
-		plat->bus_type == MODVM_BUS_MMIO ? "mmio" : "pio", plat->base);
+	pr_info("debug exit device attached to %s bus at 0x%08llx\n",
+		plat->bus_type == MODVM_BUS_MMIO ? "mmio" : "pio",
+		(unsigned long long)GPA_VAL(plat->base));
 
 	return 0;
 }

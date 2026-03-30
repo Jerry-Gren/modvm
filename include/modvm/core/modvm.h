@@ -2,13 +2,12 @@
 #ifndef MODVM_CORE_MODVM_H
 #define MODVM_CORE_MODVM_H
 
-#include <stdint.h>
-
 #include <modvm/core/res_pool.h>
 #include <modvm/core/accel.h>
 #include <modvm/core/vcpu.h>
 #include <modvm/os/thread.h>
 #include <modvm/utils/list.h>
+#include <modvm/utils/types.h>
 
 struct modvm_board;
 struct modvm_ctx;
@@ -51,7 +50,7 @@ struct modvm_event_loop {
  */
 struct modvm_config {
 	const char *accel_name;
-	uint64_t ram_base;
+	gpa_t ram_base;
 	size_t ram_size;
 	unsigned int nr_vcpus;
 	const char *loader_name;

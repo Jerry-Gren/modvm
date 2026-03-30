@@ -42,7 +42,7 @@ static void pio_bridge_set_irq_cb(void *data, struct modvm_pci_device *pci_dev,
 	if (unlikely(pin == 0 || pin > 4))
 		return;
 
-	slot = pci_dev->devfn >> 3;
+	slot = PCI_SLOT(pci_dev->devfn);
 	pirq_idx = (slot + pin - 1) % 4;
 
 	if (likely(ctx->pirq[pirq_idx]))
@@ -72,7 +72,8 @@ static uint64_t pio_bridge_read(struct modvm_device *dev, uint64_t offset,
 		if (unlikely(bus_num != 0))
 			return ~0ULL;
 
-		return modvm_pci_bus_read_config(&ctx->bus, devfn, reg, size);
+		return modvm_pci_bus_read_config(
+			&ctx->bus, TO_PCI_DEVFN_RAW(devfn), reg, size);
 	}
 
 	return ~0ULL;
@@ -101,8 +102,8 @@ static void pio_bridge_write(struct modvm_device *dev, uint64_t offset,
 		if (unlikely(bus_num != 0))
 			return;
 
-		modvm_pci_bus_write_config(&ctx->bus, devfn, reg, (uint32_t)val,
-					   size);
+		modvm_pci_bus_write_config(&ctx->bus, TO_PCI_DEVFN_RAW(devfn),
+					   reg, (uint32_t)val, size);
 	}
 }
 
@@ -145,7 +146,8 @@ static int pio_bridge_instantiate(struct modvm_device *dev, void *pdata)
 		*plat->out_bus = &ctx->bus;
 
 	pr_info("pio pci host bridge online at ports 0x%x/0x%x\n",
-		plat->config_addr_port, plat->config_data_port);
+		(unsigned int)GPA_VAL(plat->config_addr_port),
+		(unsigned int)GPA_VAL(plat->config_data_port));
 	return 0;
 }
 

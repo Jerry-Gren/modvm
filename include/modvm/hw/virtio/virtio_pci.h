@@ -2,7 +2,7 @@
 #ifndef MODVM_HW_VIRTIO_VIRTIO_PCI_H
 #define MODVM_HW_VIRTIO_VIRTIO_PCI_H
 
-#include <stdint.h>
+#include <modvm/utils/types.h>
 
 struct modvm_pci_bus;
 struct virtio_device;
@@ -20,9 +20,9 @@ struct modvm_mem_space;
 struct virtio_pci_pdata {
 	struct modvm_pci_bus *pci_bus;
 	struct virtio_device *vdev;
-	uint8_t devfn;
+	pci_devfn_t devfn;
 	uint8_t interrupt_pin;
-	uint64_t bar0_base;
+	gpa_t bar0_base;
 	struct modvm_mem_space *mem_space;
 };
 

@@ -19,6 +19,7 @@
 #include <modvm/hw/char/serial.h>
 #include <modvm/core/chardev.h>
 #include <modvm/internal/arch/x86/regs.h>
+#include <modvm/utils/types.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "test_board: " fmt
@@ -36,7 +37,7 @@ struct mock_irq_route {
 static void mock_irq_handler(void *data, int level)
 {
 	struct mock_irq_route *route = data;
-	modvm_accel_set_irq(route->accel, route->gsi, level);
+	modvm_accel_set_irq(route->accel, TO_GSI(route->gsi), level);
 }
 
 static int mock_board_init(struct modvm_ctx *ctx)
@@ -48,7 +49,7 @@ static int mock_board_init(struct modvm_ctx *ctx)
 	struct mock_irq_route *route;
 	int ret;
 
-	ret = modvm_accel_map_ram(&ctx->accel, 0x0000, 4096, 0);
+	ret = modvm_accel_map_ram(&ctx->accel, TO_GPA(0x0000), 4096, 0);
 	if (ret < 0)
 		return ret;
 
@@ -72,7 +73,7 @@ static int mock_board_init(struct modvm_ctx *ctx)
 	route->gsi = 4;
 
 	uart_pdata.bus_type = MODVM_BUS_PIO;
-	uart_pdata.base = 0x3f8;
+	uart_pdata.base = TO_GPA(0x3f8);
 	uart_pdata.reg_shift = 0;
 	uart_pdata.console = ctx->config.console;
 	uart_pdata.event_loop = &ctx->event_loop;
@@ -93,7 +94,7 @@ static int mock_board_init(struct modvm_ctx *ctx)
 		return -ENOMEM;
 
 	exit_pdata.bus_type = MODVM_BUS_PIO;
-	exit_pdata.base = 0x500;
+	exit_pdata.base = TO_GPA(0x500);
 
 	ret = modvm_device_add(exit_dev, &exit_pdata);
 	if (ret < 0) {
@@ -116,7 +117,7 @@ static int mock_board_reset(struct modvm_ctx *ctx)
 	void *hva;
 	int ret;
 
-	hva = modvm_mem_gpa_to_hva(&ctx->accel.mem_space, 0x0000);
+	hva = modvm_mem_gpa_to_hva(&ctx->accel.mem_space, TO_GPA(0x0000));
 	if (IS_ERR_OR_NULL(hva)) {
 		pr_err("failed to translate gpa 0x0000 for payload injection\n");
 		return -EFAULT;
@@ -173,7 +174,7 @@ static void test_machine_lifecycle(void)
 
 	struct modvm_config cfg = {
 		.accel_name = "kvm",
-		.ram_base = 0x0000,
+		.ram_base = TO_GPA(0x0000),
 		.ram_size = 4096,
 		.nr_vcpus = 1,
 		.loader_name = NULL,

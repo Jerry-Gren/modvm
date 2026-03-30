@@ -8,6 +8,7 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/types.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "bus: " fmt
@@ -15,7 +16,8 @@
 static void modvm_bus_region_release(struct modvm_bus_region *reg)
 {
 	list_del(&reg->node);
-	pr_debug("automatically unregistered bus region at 0x%lx\n", reg->base);
+	pr_debug("automatically unregistered bus region at 0x%llx\n",
+		 (unsigned long long)GPA_VAL(reg->base));
 }
 
 /**
@@ -30,7 +32,7 @@ static void modvm_bus_region_release(struct modvm_bus_region *reg)
  *
  * Return: 0 on success, or a negative error code.
  */
-int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
+int modvm_bus_register_region(enum modvm_bus_type type, gpa_t base,
 			      uint64_t size, struct modvm_device *dev)
 {
 	struct modvm_ctx *ctx;
@@ -48,8 +50,10 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 
 	list_for_each_entry(pos, list, node)
 	{
-		if (base < pos->base + pos->size && base + size > pos->base) {
-			pr_err("bus conflict detected at base 0x%lx\n", base);
+		if (GPA_CMP(base, <, gpa_add(pos->base, pos->size)) &&
+		    GPA_CMP(gpa_add(base, size), >, pos->base)) {
+			pr_err("bus conflict detected at base 0x%llx\n",
+			       (unsigned long long)GPA_VAL(base));
 			return -EBUSY;
 		}
 	}
@@ -71,8 +75,9 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
 		return ret;
 	}
 
-	pr_debug("registered '%s' to space %d at 0x%lx\n",
-		 dev->name ? dev->name : "unknown", type, base);
+	pr_debug("registered '%s' to space %d at 0x%llx\n",
+		 dev->name ? dev->name : "unknown", type,
+		 (unsigned long long)GPA_VAL(base));
 	return 0;
 }
 
@@ -86,12 +91,11 @@ int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
  * Return: the value supplied by the device, or ~0ULL if unmapped/out-of-bounds.
  */
 uint64_t modvm_bus_dispatch_read(struct modvm_bus *bus,
-				 enum modvm_bus_type type, uint64_t addr,
+				 enum modvm_bus_type type, gpa_t addr,
 				 uint8_t size)
 {
 	struct modvm_bus_region *pos;
 	struct list_head *list;
-	uint64_t offset;
 
 	if (WARN_ON(!bus))
 		return ~0ULL;
@@ -100,12 +104,13 @@ uint64_t modvm_bus_dispatch_read(struct modvm_bus *bus,
 
 	list_for_each_entry(pos, list, node)
 	{
-		if (addr >= pos->base && addr < pos->base + pos->size) {
-			offset = addr - pos->base;
+		if (GPA_CMP(addr, >=, pos->base) &&
+		    GPA_CMP(addr, <, gpa_add(pos->base, pos->size))) {
+			uint64_t offset = gpa_offset(addr, pos->base);
 
 			if (unlikely(offset + size > pos->size)) {
-				pr_warn("cross-boundary read intercepted at offset 0x%lx\n",
-					offset);
+				pr_warn("cross-boundary read intercepted at offset 0x%llx\n",
+					(unsigned long long)offset);
 				return ~0ULL;
 			}
 
@@ -130,11 +135,10 @@ uint64_t modvm_bus_dispatch_read(struct modvm_bus *bus,
  * @size: the size of the write request in bytes
  */
 void modvm_bus_dispatch_write(struct modvm_bus *bus, enum modvm_bus_type type,
-			      uint64_t addr, uint64_t val, uint8_t size)
+			      gpa_t addr, uint64_t val, uint8_t size)
 {
 	struct modvm_bus_region *pos;
 	struct list_head *list;
-	uint64_t offset;
 
 	if (WARN_ON(!bus))
 		return;
@@ -143,12 +147,13 @@ void modvm_bus_dispatch_write(struct modvm_bus *bus, enum modvm_bus_type type,
 
 	list_for_each_entry(pos, list, node)
 	{
-		if (addr >= pos->base && addr < pos->base + pos->size) {
-			offset = addr - pos->base;
+		if (GPA_CMP(addr, >=, pos->base) &&
+		    GPA_CMP(addr, <, gpa_add(pos->base, pos->size))) {
+			uint64_t offset = gpa_offset(addr, pos->base);
 
 			if (unlikely(offset + size > pos->size)) {
-				pr_warn("cross-boundary write intercepted at offset 0x%lx\n",
-					offset);
+				pr_warn("cross-boundary write intercepted at offset 0x%llx\n",
+					(unsigned long long)offset);
 				return;
 			}
 

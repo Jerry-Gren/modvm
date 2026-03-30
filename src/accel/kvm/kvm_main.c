@@ -13,6 +13,7 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/err.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/types.h>
 
 #include "internal.h"
 
@@ -35,10 +36,13 @@ static int kvm_mem_region_map_cb(struct modvm_mem_space *space,
 				 struct modvm_mem_region *reg, void *data)
 {
 	struct modvm_kvm_state *state = data;
-	int slot = state->mem_slot_idx++;
+
+	uint32_t slot_val = MEM_SLOT_VAL(state->mem_slot_idx);
+	state->mem_slot_idx = TO_MEM_SLOT(slot_val + 1);
+
 	struct kvm_userspace_memory_region hw_reg = {
-		.slot = slot,
-		.guest_phys_addr = reg->gpa,
+		.slot = slot_val,
+		.guest_phys_addr = GPA_VAL(reg->gpa),
 		.memory_size = reg->size,
 		.userspace_addr = (uint64_t)reg->hva,
 		.flags = 0,
@@ -49,12 +53,13 @@ static int kvm_mem_region_map_cb(struct modvm_mem_space *space,
 	if (reg->flags & MODVM_MEM_READONLY)
 		hw_reg.flags |= KVM_MEM_READONLY;
 
-	if (ioctl(state->vm_fd, KVM_SET_USER_MEMORY_REGION, &hw_reg) < 0) {
+	if (ioctl(FD_VAL(state->vm_fd), KVM_SET_USER_MEMORY_REGION, &hw_reg) <
+	    0) {
 		pr_err("failed to commit hardware memory slot: %d\n", errno);
 		return -errno;
 	}
 
-	reg->priv = (void *)(uintptr_t)slot;
+	reg->priv = (void *)(uintptr_t)slot_val;
 
 	return 0;
 }
@@ -83,7 +88,8 @@ static void kvm_mem_region_unmap_cb(struct modvm_mem_space *space,
 
 	(void)space;
 
-	if (ioctl(state->vm_fd, KVM_SET_USER_MEMORY_REGION, &hw_reg) < 0) {
+	if (ioctl(FD_VAL(state->vm_fd), KVM_SET_USER_MEMORY_REGION, &hw_reg) <
+	    0) {
 		pr_err("failed to flush hardware memory slot %u: %d\n",
 		       hw_reg.slot, errno);
 	} else {
@@ -104,34 +110,37 @@ static void kvm_mem_region_unmap_cb(struct modvm_mem_space *space,
 static int kvm_accel_init(struct modvm_accel *accel)
 {
 	struct modvm_kvm_state *state;
+	int raw_fd;
 	int ret;
 
 	state = calloc(1, sizeof(*state));
 	if (!state)
 		return -ENOMEM;
 
-	state->kvm_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
-	if (state->kvm_fd < 0) {
+	raw_fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
+	if (raw_fd < 0) {
 		pr_err("failed to open hypervisor device node\n");
 		ret = -errno;
 		goto err_free_state;
 	}
+	state->kvm_fd = TO_KVM_FD(raw_fd);
 
-	ret = ioctl(state->kvm_fd, KVM_GET_API_VERSION, 0);
+	ret = ioctl(FD_VAL(state->kvm_fd), KVM_GET_API_VERSION, 0);
 	if (ret != KVM_API_VERSION) {
 		pr_err("unsupported hypervisor api version: %d\n", ret);
 		ret = -ENOTSUP;
 		goto err_close_kvm;
 	}
 
-	state->vm_fd = ioctl(state->kvm_fd, KVM_CREATE_VM, 0);
-	if (state->vm_fd < 0) {
+	raw_fd = ioctl(FD_VAL(state->kvm_fd), KVM_CREATE_VM, 0);
+	if (raw_fd < 0) {
 		pr_err("failed to instantiate virtual machine container\n");
 		ret = -errno;
 		goto err_close_kvm;
 	}
+	state->vm_fd = TO_VM_FD(raw_fd);
 
-	state->mem_slot_idx = 0;
+	state->mem_slot_idx = TO_MEM_SLOT(0);
 	accel->priv = state;
 
 	ret = modvm_mem_space_init(&accel->mem_space, kvm_mem_region_map_cb,
@@ -156,9 +165,9 @@ static int kvm_accel_init(struct modvm_accel *accel)
 	return 0;
 
 err_close_vm:
-	close(state->vm_fd);
+	close(FD_VAL(state->vm_fd));
 err_close_kvm:
-	close(state->kvm_fd);
+	close(FD_VAL(state->kvm_fd));
 err_free_state:
 	free(state);
 	return ret;
@@ -177,13 +186,13 @@ static int kvm_accel_irqchip_setup(struct modvm_accel *accel)
 	struct kvm_pit_config pit_conf = { .flags = 0 };
 	struct modvm_kvm_state *state = accel->priv;
 
-	if (ioctl(state->vm_fd, KVM_CREATE_IRQCHIP, 0) < 0) {
+	if (ioctl(FD_VAL(state->vm_fd), KVM_CREATE_IRQCHIP, 0) < 0) {
 		pr_err("failed to synthesize architectural irqchip: %d\n",
 		       errno);
 		return -errno;
 	}
 
-	if (ioctl(state->vm_fd, KVM_CREATE_PIT2, &pit_conf) < 0) {
+	if (ioctl(FD_VAL(state->vm_fd), KVM_CREATE_PIT2, &pit_conf) < 0) {
 		pr_err("failed to synthesize programmable interval timer: %d\n",
 		       errno);
 		return -errno;
@@ -201,16 +210,16 @@ static int kvm_accel_irqchip_setup(struct modvm_accel *accel)
  *
  * Return: 0 on success, or a negative error code.
  */
-static int kvm_accel_set_irq(struct modvm_accel *accel, uint32_t gsi, int level)
+static int kvm_accel_set_irq(struct modvm_accel *accel, gsi_t gsi, int level)
 {
 	struct kvm_irq_level irq_level;
 	struct modvm_kvm_state *state = accel->priv;
 
-	irq_level.irq = gsi;
+	irq_level.irq = GSI_VAL(gsi);
 	irq_level.level = level;
 
-	if (ioctl(state->vm_fd, KVM_IRQ_LINE, &irq_level) < 0) {
-		pr_err("failed to assert hardware irq line %u\n", gsi);
+	if (ioctl(FD_VAL(state->vm_fd), KVM_IRQ_LINE, &irq_level) < 0) {
+		pr_err("failed to assert hardware irq line %u\n", GSI_VAL(gsi));
 		return -errno;
 	}
 
@@ -231,8 +240,10 @@ static void kvm_accel_destroy(struct modvm_accel *accel)
 	}
 
 	modvm_mem_space_destroy(&accel->mem_space);
-	close(state->vm_fd);
-	close(state->kvm_fd);
+	if (IS_VALID_FD(state->vm_fd))
+		close(FD_VAL(state->vm_fd));
+	if (IS_VALID_FD(state->kvm_fd))
+		close(FD_VAL(state->kvm_fd));
 	free(state);
 	accel->priv = NULL;
 }

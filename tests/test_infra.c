@@ -12,6 +12,7 @@
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
 #include <modvm/core/res_pool.h>
+#include <modvm/utils/types.h>
 
 #include <modvm/core/bus.h>
 #include <modvm/core/modvm.h>
@@ -150,27 +151,33 @@ static void test_bus_routing(void)
 	modvm_res_pool_init(&timer_dev.devm_pool, &timer_dev);
 	modvm_res_pool_init(&dummy_dev.devm_pool, &dummy_dev);
 
-	ret = modvm_bus_register_region(MODVM_BUS_PIO, 0x40, 4, &timer_dev);
+	ret = modvm_bus_register_region(MODVM_BUS_PIO, TO_GPA(0x40), 4,
+					&timer_dev);
 	if (WARN_ON(ret != 0))
 		modvm_panic("failed to register pio peripheral\n");
 
-	ret = modvm_bus_register_region(MODVM_BUS_PIO, 0x42, 1, &dummy_dev);
+	ret = modvm_bus_register_region(MODVM_BUS_PIO, TO_GPA(0x42), 1,
+					&dummy_dev);
 	if (WARN_ON(ret == 0))
 		modvm_panic("bus permitted overlapping address registration\n");
 
-	ret = modvm_bus_register_region(MODVM_BUS_MMIO, 0x42, 1, &dummy_dev);
+	ret = modvm_bus_register_region(MODVM_BUS_MMIO, TO_GPA(0x42), 1,
+					&dummy_dev);
 	if (WARN_ON(ret != 0))
 		modvm_panic("bus failed to isolate pio and mmio spaces\n");
 
-	modvm_bus_dispatch_write(&mock_ctx.bus, MODVM_BUS_PIO, 0x40, 500, 4);
+	modvm_bus_dispatch_write(&mock_ctx.bus, MODVM_BUS_PIO, TO_GPA(0x40),
+				 500, 4);
 	if (WARN_ON(timer_ctx.ticks != 500))
 		modvm_panic("write routing failed to mutate state\n");
 
-	val = modvm_bus_dispatch_read(&mock_ctx.bus, MODVM_BUS_PIO, 0x40, 4);
+	val = modvm_bus_dispatch_read(&mock_ctx.bus, MODVM_BUS_PIO,
+				      TO_GPA(0x40), 4);
 	if (WARN_ON(val != 500))
 		modvm_panic("read routing returned incorrect data\n");
 
-	val = modvm_bus_dispatch_read(&mock_ctx.bus, MODVM_BUS_PIO, 0x3f8, 1);
+	val = modvm_bus_dispatch_read(&mock_ctx.bus, MODVM_BUS_PIO,
+				      TO_GPA(0x3f8), 1);
 	if (WARN_ON(val != ~0ULL))
 		modvm_panic("unmapped port failed floating bus constraint\n");
 

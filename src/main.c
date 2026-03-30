@@ -10,6 +10,7 @@
 #include <modvm/core/chardev.h>
 #include <modvm/core/block.h>
 #include <modvm/core/net.h>
+#include <modvm/utils/types.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "main: " fmt
@@ -63,7 +64,7 @@ int main(int argc, char **argv)
 	size_t nr_nets = 0;
 	struct modvm_config cfg = {
 		.accel_name = "kvm",
-		.ram_base = 0x0000,
+		.ram_base = TO_GPA(0x0000),
 		.ram_size = 16 * 1024 * 1024,
 		.nr_vcpus = 1,
 		.loader_name = "raw-x86",

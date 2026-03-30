@@ -2,9 +2,9 @@
 #ifndef MODVM_CORE_BUS_H
 #define MODVM_CORE_BUS_H
 
-#include <stdint.h>
 #include <modvm/core/device.h>
 #include <modvm/utils/list.h>
+#include <modvm/utils/types.h>
 
 struct modvm_bus;
 
@@ -29,17 +29,17 @@ enum modvm_bus_type {
 struct modvm_bus_region {
 	struct list_head node;
 	struct modvm_device *dev;
-	uint64_t base;
+	gpa_t base;
 	uint64_t size;
 	enum modvm_bus_type type;
 };
 
-int modvm_bus_register_region(enum modvm_bus_type type, uint64_t base,
+int modvm_bus_register_region(enum modvm_bus_type type, gpa_t base,
 			      uint64_t size, struct modvm_device *dev);
 uint64_t modvm_bus_dispatch_read(struct modvm_bus *bus,
-				 enum modvm_bus_type type, uint64_t addr,
+				 enum modvm_bus_type type, gpa_t addr,
 				 uint8_t size);
 void modvm_bus_dispatch_write(struct modvm_bus *bus, enum modvm_bus_type type,
-			      uint64_t addr, uint64_t val, uint8_t size);
+			      gpa_t addr, uint64_t val, uint8_t size);
 
 #endif /* MODVM_CORE_BUS_H */

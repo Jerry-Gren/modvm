@@ -2,9 +2,9 @@
 #ifndef MODVM_CORE_DEVICE_H
 #define MODVM_CORE_DEVICE_H
 
-#include <stdint.h>
 #include <modvm/utils/list.h>
 #include <modvm/core/res_pool.h>
+#include <modvm/utils/types.h>
 
 struct modvm_ctx;
 struct modvm_device;

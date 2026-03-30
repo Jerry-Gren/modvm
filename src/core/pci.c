@@ -5,6 +5,7 @@
 #include <modvm/utils/bug.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/compiler.h>
+#include <modvm/utils/types.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt) "pci: " fmt
@@ -17,7 +18,7 @@
  * @set_irq_cb: host bridge hook for interrupt routing
  * @sys_data: host bridge closure data
  */
-void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
+void modvm_pci_bus_init(struct modvm_pci_bus *bus, gpa_t mmio_base,
 			uint64_t mmio_size, modvm_pci_set_irq_cb_t set_irq_cb,
 			void *sys_data)
 {
@@ -28,9 +29,9 @@ void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
 	bus->set_irq_cb = set_irq_cb;
 	bus->sys_data = sys_data;
 
-	bus->next_devfn = 8;
+	bus->next_devfn = TO_PCI_DEVFN(1, 0);
 	bus->mmio_alloc_cursor = mmio_base;
-	bus->mmio_limit = mmio_base + mmio_size;
+	bus->mmio_limit = gpa_add(mmio_base, mmio_size);
 }
 
 /**
@@ -40,26 +41,25 @@ void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
  *
  * Return: absolute physical base address, or 0 on failure.
  */
-uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size)
+gpa_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size)
 {
-	uint64_t base;
+	gpa_t base;
 
 	if (WARN_ON(!bus || size == 0))
-		return 0;
+		return INVALID_GPA;
 
-	base = (bus->mmio_alloc_cursor + size - 1) & ~(size - 1);
+	base = gpa_align(bus->mmio_alloc_cursor, size);
 
-	if (unlikely(base < bus->mmio_alloc_cursor ||
-		     base + size > bus->mmio_limit)) {
+	if (unlikely(GPA_CMP(base, <, bus->mmio_alloc_cursor) ||
+		     GPA_CMP(gpa_add(base, size), >, bus->mmio_limit))) {
 		pr_err("PCI MMIO window exhausted (requested: %zu, available: %llu)\n",
 		       size,
-		       (unsigned long long)(bus->mmio_limit -
-					    bus->mmio_alloc_cursor));
-		return 0;
+		       (unsigned long long)gpa_offset(bus->mmio_limit,
+						      bus->mmio_alloc_cursor));
+		return INVALID_GPA;
 	}
 
-	bus->mmio_alloc_cursor = base + size;
-
+	bus->mmio_alloc_cursor = gpa_add(base, size);
 	return base;
 }
 
@@ -81,20 +81,21 @@ int modvm_pci_device_register(struct modvm_pci_bus *bus,
 	if (WARN_ON(!bus || !pci_dev))
 		return -EINVAL;
 
-	if (pci_dev->devfn == PCI_AUTO_DEVFN) {
-		if (WARN_ON(bus->next_devfn > 255)) {
+	if (PCI_DEVFN_CMP(pci_dev->devfn, ==, PCI_AUTO_DEVFN)) {
+		if (WARN_ON(PCI_DEVFN_VAL(bus->next_devfn) > 248)) {
 			pr_err("PCI bus exhausted, no available devfn\n");
 			return -ENOSPC;
 		}
 		pci_dev->devfn = bus->next_devfn;
-		bus->next_devfn += 8;
+		bus->next_devfn =
+			TO_PCI_DEVFN_RAW(PCI_DEVFN_VAL(bus->next_devfn) + 8);
 	}
 
 	list_for_each_entry(pos, &bus->devices, node)
 	{
-		if (pos->devfn == pci_dev->devfn) {
+		if (PCI_DEVFN_CMP(pos->devfn, ==, pci_dev->devfn)) {
 			pr_err("PCI slot collision detected at devfn %u\n",
-			       pci_dev->devfn);
+			       PCI_DEVFN_VAL(pci_dev->devfn));
 			return -EBUSY;
 		}
 	}
@@ -105,23 +106,22 @@ int modvm_pci_device_register(struct modvm_pci_bus *bus,
 	pci_dev->config_space[PCI_INTERRUPT_LINE] = 0;
 
 	list_add_tail(&pci_dev->node, &bus->devices);
-	pr_info("registered PCI device at devfn %u (pin %u)\n", pci_dev->devfn,
-		pci_dev->interrupt_pin);
+	pr_info("registered PCI device at devfn %u (pin %u)\n",
+		PCI_DEVFN_VAL(pci_dev->devfn), pci_dev->interrupt_pin);
 
 	return 0;
 }
 
 static struct modvm_pci_device *
-modvm_pci_bus_find_device(struct modvm_pci_bus *bus, uint8_t devfn)
+modvm_pci_bus_find_device(struct modvm_pci_bus *bus, pci_devfn_t devfn)
 {
 	struct modvm_pci_device *pos;
 
 	list_for_each_entry(pos, &bus->devices, node)
 	{
-		if (pos->devfn == devfn)
+		if (PCI_DEVFN_CMP(pos->devfn, ==, devfn))
 			return pos;
 	}
-
 	return NULL;
 }
 
@@ -134,7 +134,7 @@ modvm_pci_bus_find_device(struct modvm_pci_bus *bus, uint8_t devfn)
  *
  * Return: the requested register value, or ~0U if unmapped.
  */
-uint32_t modvm_pci_bus_read_config(struct modvm_pci_bus *bus, uint8_t devfn,
+uint32_t modvm_pci_bus_read_config(struct modvm_pci_bus *bus, pci_devfn_t devfn,
 				   uint8_t offset, uint8_t size)
 {
 	struct modvm_pci_device *pci_dev;
@@ -160,7 +160,7 @@ uint32_t modvm_pci_bus_read_config(struct modvm_pci_bus *bus, uint8_t devfn,
  * @val: the payload to write
  * @size: size of the write request
  */
-void modvm_pci_bus_write_config(struct modvm_pci_bus *bus, uint8_t devfn,
+void modvm_pci_bus_write_config(struct modvm_pci_bus *bus, pci_devfn_t devfn,
 				uint8_t offset, uint32_t val, uint8_t size)
 {
 	struct modvm_pci_device *pci_dev;

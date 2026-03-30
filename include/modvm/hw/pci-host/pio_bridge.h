@@ -2,7 +2,7 @@
 #ifndef MODVM_HW_PCI_HOST_PIO_BRIDGE_H
 #define MODVM_HW_PCI_HOST_PIO_BRIDGE_H
 
-#include <stdint.h>
+#include <modvm/utils/types.h>
 
 struct modvm_irq;
 struct modvm_pci_bus;
@@ -17,9 +17,9 @@ struct modvm_pci_bus;
  * @out_bus: OUT parameter; bridge will populate this with its logical bus pointer
  */
 struct pio_bridge_pdata {
-	uint16_t config_addr_port;
-	uint16_t config_data_port;
-	uint64_t mmio_base;
+	gpa_t config_addr_port;
+	gpa_t config_data_port;
+	gpa_t mmio_base;
 	uint64_t mmio_size;
 	struct modvm_irq *pirq[4];
 	struct modvm_pci_bus **out_bus;

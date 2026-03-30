@@ -180,7 +180,8 @@ static struct modvm_block *modvm_block_posix_create(const char *opts)
 	blk->priv = ctx;
 
 	pr_info("mounted block backend '%s', capacity: %llu MB%s\n", path,
-		ctx->capacity / (1024 * 1024), readonly ? " (RO)" : "");
+		(unsigned long long)(ctx->capacity / (1024 * 1024)),
+		readonly ? " (RO)" : "");
 
 	free(path);
 	return blk;

@@ -2,9 +2,9 @@
 #ifndef MODVM_HW_VIRTIO_VIRTIO_H
 #define MODVM_HW_VIRTIO_VIRTIO_H
 
-#include <stdint.h>
 #include <modvm/core/device.h>
 #include <modvm/core/irq.h>
+#include <modvm/utils/types.h>
 
 #define VIRTIO_MMIO_MAGIC 0x74726976 /* "virt" */
 #define VIRTIO_MMIO_VERSION_1 2 /* Virtio 1.0 (v2) */
@@ -94,7 +94,7 @@ static inline void virtio_device_release(struct virtio_device *vdev)
  * @mem_space: ?
  */
 struct virtio_mmio_pdata {
-	uint64_t base;
+	gpa_t base;
 	struct modvm_irq *irq;
 	struct virtio_device *vdev;
 	struct modvm_mem_space *mem_space;

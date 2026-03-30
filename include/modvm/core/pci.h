@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <modvm/core/device.h>
 #include <modvm/utils/list.h>
+#include <modvm/utils/types.h>
 
 #define PCI_CONFIG_SPACE_SIZE 256
 
@@ -12,8 +13,8 @@
 #define PCI_INTERRUPT_LINE 0x3C
 #define PCI_INTERRUPT_PIN 0x3D
 
-#define PCI_AUTO_DEVFN 0xFF
-#define PCI_AUTO_MMIO 0ULL
+#define PCI_AUTO_DEVFN INVALID_PCI_DEVFN
+#define PCI_AUTO_MMIO INVALID_GPA
 
 struct modvm_pci_device;
 struct modvm_pci_bus;
@@ -59,7 +60,7 @@ struct modvm_pci_device {
 	const struct modvm_pci_device_ops *ops;
 	void *priv;
 
-	uint8_t devfn;
+	pci_devfn_t devfn;
 	uint8_t interrupt_pin;
 	uint8_t interrupt_line;
 	uint8_t config_space[PCI_CONFIG_SPACE_SIZE];
@@ -79,20 +80,20 @@ struct modvm_pci_bus {
 	modvm_pci_set_irq_cb_t set_irq_cb;
 	void *sys_data;
 
-	uint8_t next_devfn;
-	uint64_t mmio_alloc_cursor;
-	uint64_t mmio_limit;
+	pci_devfn_t next_devfn;
+	gpa_t mmio_alloc_cursor;
+	gpa_t mmio_limit;
 };
 
-void modvm_pci_bus_init(struct modvm_pci_bus *bus, uint64_t mmio_base,
+void modvm_pci_bus_init(struct modvm_pci_bus *bus, gpa_t mmio_base,
 			uint64_t mmio_size, modvm_pci_set_irq_cb_t set_irq_cb,
 			void *sys_data);
-uint64_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size);
+gpa_t modvm_pci_bus_alloc_mmio(struct modvm_pci_bus *bus, size_t size);
 int modvm_pci_device_register(struct modvm_pci_bus *bus,
 			      struct modvm_pci_device *pci_dev);
-uint32_t modvm_pci_bus_read_config(struct modvm_pci_bus *bus, uint8_t devfn,
+uint32_t modvm_pci_bus_read_config(struct modvm_pci_bus *bus, pci_devfn_t devfn,
 				   uint8_t offset, uint8_t size);
-void modvm_pci_bus_write_config(struct modvm_pci_bus *bus, uint8_t devfn,
+void modvm_pci_bus_write_config(struct modvm_pci_bus *bus, pci_devfn_t devfn,
 				uint8_t offset, uint32_t val, uint8_t size);
 void modvm_pci_device_set_irq(struct modvm_pci_device *pci_dev, int level);
 

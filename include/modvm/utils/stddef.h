@@ -3,7 +3,6 @@
 
 /* Fallback to standard C library definitions for user-space */
 #include <stddef.h>
-#include <stdbool.h>
 
 #ifndef NULL
 #define NULL ((void *)0)

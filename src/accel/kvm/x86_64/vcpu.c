@@ -10,6 +10,7 @@
 #include <modvm/internal/arch/x86/regs.h>
 #include <modvm/utils/log.h>
 #include <modvm/utils/bug.h>
+#include <modvm/utils/types.h>
 
 #include "../internal.h"
 
@@ -29,7 +30,7 @@
  *
  * Return: 0 on success, or a negative error code.
  */
-static int kvm_x86_cpuid_setup(struct modvm_kvm_state *state, int vcpu_fd)
+static int kvm_x86_cpuid_setup(struct modvm_kvm_state *state, vcpu_fd_t vcpu_fd)
 {
 	struct kvm_cpuid2 *cpuid;
 	int nent = 100;
@@ -44,7 +45,8 @@ static int kvm_x86_cpuid_setup(struct modvm_kvm_state *state, int vcpu_fd)
 			return -ENOMEM;
 
 		cpuid->nent = nent;
-		ret = ioctl(state->kvm_fd, KVM_GET_SUPPORTED_CPUID, cpuid);
+		ret = ioctl(FD_VAL(state->kvm_fd), KVM_GET_SUPPORTED_CPUID,
+			    cpuid);
 		if (ret == 0)
 			break;
 
@@ -66,7 +68,7 @@ static int kvm_x86_cpuid_setup(struct modvm_kvm_state *state, int vcpu_fd)
 		return -E2BIG;
 	}
 
-	ret = ioctl(vcpu_fd, KVM_SET_CPUID2, cpuid);
+	ret = ioctl(FD_VAL(vcpu_fd), KVM_SET_CPUID2, cpuid);
 	if (ret < 0) {
 		ret = -errno;
 		pr_err("failed to inject cpuid definitions into vcpu: %d\n",
@@ -105,8 +107,8 @@ int modvm_kvm_arch_vcpu_init(struct modvm_vcpu *vcpu)
 			.mp_state = KVM_MP_STATE_UNINITIALIZED
 		};
 
-		if (ioctl(vcpu_state->vcpu_fd, KVM_SET_MP_STATE, &mp_state) <
-		    0) {
+		if (ioctl(FD_VAL(vcpu_state->vcpu_fd), KVM_SET_MP_STATE,
+			  &mp_state) < 0) {
 			ret = -errno;
 			pr_err("failed to set architectural power state for ap %d: %d\n",
 			       vcpu->id, ret);
@@ -171,7 +173,7 @@ int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
 		if (WARN_ON(size != sizeof(*m_sregs)))
 			return -EINVAL;
 
-		if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &k_sregs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_GET_SREGS, &k_sregs) < 0)
 			return -errno;
 
 		kvm_x86_segment_unpack(&m_sregs->cs, &k_sregs.cs);
@@ -200,7 +202,7 @@ int modvm_kvm_arch_vcpu_get_regs(struct modvm_vcpu *vcpu,
 		if (WARN_ON(size != sizeof(*m_regs)))
 			return -EINVAL;
 
-		if (ioctl(state->vcpu_fd, KVM_GET_REGS, &k_regs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_GET_REGS, &k_regs) < 0)
 			return -errno;
 
 		m_regs->rax = k_regs.rax;
@@ -250,7 +252,7 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 			return -EINVAL;
 
 		/* Fetch existing state to preserve unmapped fields like interrupt bitmaps */
-		if (ioctl(state->vcpu_fd, KVM_GET_SREGS, &k_sregs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_GET_SREGS, &k_sregs) < 0)
 			return -errno;
 
 		kvm_x86_segment_pack(&k_sregs.cs, &m_sregs->cs);
@@ -270,7 +272,7 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 		k_sregs.efer = m_sregs->efer;
 		k_sregs.apic_base = m_sregs->apic_base;
 
-		if (ioctl(state->vcpu_fd, KVM_SET_SREGS, &k_sregs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_SET_SREGS, &k_sregs) < 0)
 			return -errno;
 		return 0;
 	}
@@ -302,7 +304,7 @@ int modvm_kvm_arch_vcpu_set_regs(struct modvm_vcpu *vcpu,
 		k_regs.rip = m_regs->rip;
 		k_regs.rflags = m_regs->rflags;
 
-		if (ioctl(state->vcpu_fd, KVM_SET_REGS, &k_regs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_SET_REGS, &k_regs) < 0)
 			return -errno;
 		return 0;
 	}
@@ -317,7 +319,7 @@ int modvm_kvm_arch_vcpu_get_reg(struct modvm_vcpu *vcpu, uint64_t reg_id,
 	struct kvm_regs k_regs;
 
 	if (reg_id <= MODVM_X86_REG_RFLAGS) {
-		if (ioctl(state->vcpu_fd, KVM_GET_REGS, &k_regs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_GET_REGS, &k_regs) < 0)
 			return -errno;
 
 		switch (reg_id) {
@@ -390,7 +392,7 @@ int modvm_kvm_arch_vcpu_set_reg(struct modvm_vcpu *vcpu, uint64_t reg_id,
 	struct kvm_regs k_regs;
 
 	if (reg_id <= MODVM_X86_REG_RFLAGS) {
-		if (ioctl(state->vcpu_fd, KVM_GET_REGS, &k_regs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_GET_REGS, &k_regs) < 0)
 			return -errno;
 
 		switch (reg_id) {
@@ -452,7 +454,7 @@ int modvm_kvm_arch_vcpu_set_reg(struct modvm_vcpu *vcpu, uint64_t reg_id,
 			return -EINVAL;
 		}
 
-		if (ioctl(state->vcpu_fd, KVM_SET_REGS, &k_regs) < 0)
+		if (ioctl(FD_VAL(state->vcpu_fd), KVM_SET_REGS, &k_regs) < 0)
 			return -errno;
 		return 0;
 	}
@@ -503,10 +505,11 @@ int modvm_kvm_arch_vcpu_handle_exit(struct modvm_vcpu *vcpu,
 				}
 
 				modvm_bus_dispatch_write(bus, MODVM_BUS_PIO,
-							 port, val, size);
+							 TO_GPA(port), val,
+							 size);
 			} else {
 				uint64_t val = modvm_bus_dispatch_read(
-					bus, MODVM_BUS_PIO, port, size);
+					bus, MODVM_BUS_PIO, TO_GPA(port), size);
 
 				switch (size) {
 				case 1:
