@@ -3,7 +3,7 @@ modvm
 
 modvm is a cross-platform virtual machine hypervisor. This is only a demo version.
 
-How to Build
+How to Build (Deprecated)
 -----------
 
 It is recommended to build through CMake and Ninja. GNU Make is also needed to build the firmware. Tested versions are:
@@ -24,7 +24,7 @@ The executable should then locate in `build/src/`, along with tests located in `
 
 To build the firmware, run `make` in `firmware/`.
 
-Run the Demo
+Run the Demo (Deprecated)
 -----------
 
 Make sure you are in the `build/` folder. Then:
